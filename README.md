@@ -19,7 +19,7 @@
 
 <sub>Interface illustration—not a photograph, benchmark, or captured device screen.</sub>
 
-[Features](#what-this-edition-adds) · [Hardware](#the-hardware-you-need) · [Get started](#getting-started) · [Voice commands](#voice-commands-that-actually-control-the-device) · [Validation](docs/VALIDATION.md)
+[Screenshots](#on-the-device) · [Features](#what-this-edition-adds) · [Hardware](#the-hardware-you-need) · [Get started](#getting-started) · [Voice commands](#voice-commands-that-actually-control-the-device) · [Validation](docs/VALIDATION.md)
 
 **Built on [Meta’s Muse Gadget SDK](https://github.com/facebookincubator/muse-gadget-sdk),
 [M5Stack StackFlow](https://github.com/m5stack/StackFlow), [Whisper](https://github.com/openai/whisper),
@@ -29,6 +29,40 @@ This community edition adds the speech, reader, recorder, and control experience
 </div>
 
 ---
+
+## On the device
+
+Real screen captures from **v0.2.0**. Click a screen to view it at full size.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/assets/screenshots/splash.png"><img src="docs/assets/screenshots/splash.png" width="320" alt="Gold-and-teal avatar splash with Muse Storyteller version 0.2.0"></a><br>
+      <strong>A welcome with personality</strong><br>
+      <sub>Your color-avatar splash, a visible version, and tap to skip.</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/assets/screenshots/voice-commands.png"><img src="docs/assets/screenshots/voice-commands.png" width="320" alt="On-device Voice Commands guide with Stop, Pause and Restart controls"></a><br>
+      <strong>Commands within reach</strong><br>
+      <sub>Learn what to say without leaving the device.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="docs/assets/screenshots/sound.png"><img src="docs/assets/screenshots/sound.png" width="320" alt="Sound settings showing the microphone meter and Mic level slider above the purple playback controls"></a><br>
+      <strong>See it. Adjust it.</strong><br>
+      <sub>A live microphone meter and familiar sliders in Sound.</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/assets/screenshots/startup.png"><img src="docs/assets/screenshots/startup.png" width="320" alt="Startup settings with Show splash toggle, software version and Preview splash button"></a><br>
+      <strong>Make startup yours</strong><br>
+      <sub>Preview the splash or switch it off—your choice is saved.</sub>
+    </td>
+  </tr>
+</table>
+
+The purple transport row uses equally sized **Stop · Pause/Resume · Restart** buttons.
+Unavailable actions dim automatically; Pause changes to Resume during paused playback.
 
 ## What this edition adds
 

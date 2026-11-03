@@ -40,3 +40,10 @@ avatar. The encoded image data in `muse_splash_art.c` is a separate branding ass
 excluded from the Apache code license; its integration/descriptor code remains project
 code. It is not upstream Muse artwork. No personal Muse avatar renderer or pairing
 state is needed to build it.
+
+## Device screenshots
+
+The README gallery contains four reviewed v0.2.0 device UI captures in
+`docs/assets/screenshots/`. They show project UI and branding, with no account-usage
+readout or conversation/recording contents. Screenshot publication does not relicense
+third-party marks or the separately licensed splash branding described above.

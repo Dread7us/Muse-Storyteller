@@ -1,5 +1,6 @@
 """Publication guard: report filenames/categories, never print matched secrets."""
 import re
+import hashlib
 from pathlib import Path
 import subprocess
 
@@ -12,6 +13,14 @@ RULES={
     'personal workstation path':r'(?:[A-Za-z]:[\\/]'+('Us'+'ers')+r'[\\/][^\s"\']+|/'+('Us'+'ers')+r'/[^/\s]+/)',
     'account/contact address':r'[A-Za-z0-9_.+-]+@(?:gmail|hotmail|outlook)\.com',
     'private network password':r'CONFIG_.*(?:WIFI_PASSWORD|WIFI_PASS)\s*=\s*"[^"\n]+"',
+}
+
+# Exact publication allowlist: reviewed device UI only, no account or transcript data.
+REVIEWED_SCREENSHOTS={
+    'docs/assets/screenshots/splash.png': 'befdcbc1c8cd59c5829ce382d5562a95ec0fbbe286bc21a3044debe1f5565286',
+    'docs/assets/screenshots/voice-commands.png': '9b4bd853b37e6458861eeb708efa1972efdd1ca42268174ea308f6e48c15c47f',
+    'docs/assets/screenshots/sound.png': 'd666a32d665dbf3e54d76965e034cbe533c53fcb19a24134e846ca81ee9ffeca',
+    'docs/assets/screenshots/startup.png': 'e5f6415e076f93e14db322def7e1877ae46edb2ac93b81fd73b858d5b0e3f2f2',
 }
 
 def paths():
@@ -27,6 +36,10 @@ def main():
     problems=[];count=0
     for path in paths():
         count+=1; relative=path.relative_to(ROOT).as_posix()
+        if relative in REVIEWED_SCREENSHOTS:
+            if hashlib.sha256(path.read_bytes()).hexdigest()!=REVIEWED_SCREENSHOTS[relative]:
+                problems.append((relative,'screenshot changed; requires visual privacy review'))
+            continue
         if path.suffix.lower() in FORBIDDEN: problems.append((relative,'device data/binary or private key file'));continue
         try:text=path.read_text(encoding='utf-8-sig')
         except UnicodeError:problems.append((relative,'unreviewed binary'));continue
