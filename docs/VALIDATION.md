@@ -32,6 +32,14 @@ This is **one controlled comparison**, not a broad word-error-rate benchmark. Ac
 distance, noise, speech length and hardware load can change results. Model loading adds
 startup time; keeping Base loaded avoids repeating that load for every recording.
 
+## Public source checks
+
+The isolated public SDK preparation passed its pinned-source checks. ESP32 compiler
+checks passed for the sanitized UI, input, settings, weather and LVGL renderer sources.
+The GitHub portable suite also passed, including native command-parser checks. A full
+cold build/link of the sanitized profile was not completed for this source preview;
+the complete built/flashed application checks above refer to the reference installation.
+
 ## Current boundaries
 
 - The public weather configuration and generic self-test greeting differ from the private

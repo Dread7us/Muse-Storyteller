@@ -1,4 +1,4 @@
-/* Derived from bundled LVGL Montserrat (MIT), preserving its license. */
+/* LVGL generated-code basis: MIT. Font material: SIL OFL; see third_party notices. */
 /*******************************************************************************
  * Size: 14 px
  * Bpp: 4

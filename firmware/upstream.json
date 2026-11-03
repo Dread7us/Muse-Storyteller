@@ -88,19 +88,19 @@
     },
     "esp32/components/muse/muse_reader_bold_font.c": {
       "base_sha256": null,
-      "overlay_sha256": "c9aee9783f0bc0b0c4156d4c7d3996d7da4e9e151bfd56a1af7d41b91aa41ab8"
+      "overlay_sha256": "3a359101f764684529f1cc85a08e81fe4fd62368a7d5d6e0303840b33fcab93b"
     },
     "esp32/components/muse/muse_reader_bold_italic_font.c": {
       "base_sha256": null,
-      "overlay_sha256": "d62ddecb06027977dc7059b34e7cb87cd149c32b7c82a1b2edc7a6ca92a27846"
+      "overlay_sha256": "8695b1985f4c2357d861de19136aa7409d3a6ddb3ee534c3dd7560e8d63c154f"
     },
     "esp32/components/muse/muse_reader_code_font.c": {
       "base_sha256": null,
-      "overlay_sha256": "b4784b4cb16a73df3ed0f535c60e00536160debb5430721331484399a9353ec5"
+      "overlay_sha256": "6e7b0f9f3127e0851909c3bab776477549de978589c9a7295fae8d52a3e399be"
     },
     "esp32/components/muse/muse_reader_italic_font.c": {
       "base_sha256": null,
-      "overlay_sha256": "c391c9f62ffe619e2e474a8c5fc2898638f5eff09e18a2fe23ea1aa3c204b98f"
+      "overlay_sha256": "b5958239a34e16017898299dad36abdf3bb76d5a6cf1a0cfed67e8712a8c221a"
     },
     "esp32/components/muse/muse_reader_layout.h": {
       "base_sha256": null,
