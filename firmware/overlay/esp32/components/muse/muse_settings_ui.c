@@ -73,7 +73,7 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text, *s_weather;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text, *s_weather, *s_commands;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -85,7 +85,7 @@ typedef struct {
     void (*build)(lv_obj_t *tile);
 } page_t;
 
-static const page_t SOUND,WEATHER;
+static const page_t SOUND,WEATHER,COMMANDS;
 #if CONFIG_MUSE_MODULE_LLM
 static lv_obj_t *s_recorder_page,*s_recorder_list,*s_rec_status,*s_rec_note,*s_rec_start,*s_rec_stop,*s_rec_continue,*s_rec_read,*s_rec_audio_row,*s_rec_audio_sw,*s_rec_text,*s_rec_page_label,*s_rec_prevpage,*s_rec_nextpage,*s_rec_older,*s_rec_newer,*s_rec_original_button,*s_rec_nav,*s_rec_sleep_sw,*s_home_recorder;
 static bool s_rec_audio_choice=true,s_rec_reading,s_rec_scroll_pending,s_rec_original;
@@ -401,7 +401,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text, &s_weather };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text, &s_weather, &s_commands };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1591,6 +1591,69 @@ void muse_settings_ui_open_recorder(void){}
 #if CONFIG_MUSE_MODULE_LLM
 static const page_t RECORDER={&s_recorder_page,build_recorder_page};
 #endif
+/* Read-only guide: allocated on entry and released by normal page navigation. */
+static void command_guide_text(lv_obj_t *parent, const char *text, const lv_font_t *font, uint32_t color)
+{
+    lv_obj_t *l=lv_label_create(parent);
+    lv_obj_set_width(l,lv_pct(100));
+    lv_label_set_long_mode(l,LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_style_text_font(l,font,0);
+    lv_obj_set_style_text_color(l,lv_color_hex(color),0);
+    lv_obj_set_style_text_line_space(l,4,0);
+    lv_label_set_text(l,text);
+}
+static void command_guide_card(lv_obj_t *list,const char *title,const char *commands,const char *tip)
+{
+    lv_obj_t *c=card(list,false);
+    lv_obj_set_height(c,LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(c,LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(c,13,0);
+    lv_obj_set_style_pad_row(c,9,0);
+    lv_obj_set_style_border_width(c,1,0);
+    lv_obj_set_style_border_color(c,lv_color_hex(0x35274d),0);
+    command_guide_text(c,title,&lv_font_montserrat_14,COLOR_ACCENT);
+    command_guide_text(c,commands,&lv_font_montserrat_16,COLOR_TEXT);
+    if(tip)command_guide_text(c,tip,&lv_font_montserrat_14,COLOR_DIM);
+}
+static void build_commands_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_commands=page(tile,"VOICE COMMANDS",true,&list);
+    lv_obj_set_scrollbar_mode(list,LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(list,lv_color_hex(COLOR_ACCENT),LV_PART_SCROLLBAR);
+    command_guide_card(list,"HOW TO SAY IT",
+        "Hold talk until LISTENING.\nSay one command, then release.",
+        "Scroll for volume, mute and more.");
+    command_guide_card(list,"VOLUME  /  0-100%",
+        "Set volume to 35 percent.\nVolume up.\nVolume down.",
+        "Steps change by 10. Setting volume also unmutes. At 0%, raise it to hear audio.");
+    command_guide_card(list,"MUTE & UNMUTE",
+        "Mute.\nUnmute.",
+        "Say either as one word. MUTED appears in the header. Unmute keeps your selected volume.");
+    command_guide_card(list,"BRIGHTNESS  /  10-100%",
+        "Set brightness to 60 percent.",
+        "You can also say: Set screen brightness to sixty percent.");
+    command_guide_card(list,"SPEECH SPEED",
+        "Set speech speed to slow.\n\nSet speech speed to normal.\n\nSet speech speed to fast.",
+        "Speak slower selects Slow. Speak faster selects Fast.");
+    command_guide_card(list,"OTHER WAYS TO SAY IT",
+        "Turn the volume up.\nTurn volume down.\nRaise the volume.\nLower the volume.\n\nMute the speaker.\nUnmute the speaker.",
+        "Set my volume, set your volume, and set speaker volume are supported. Spoken whole numbers work too.");
+    command_guide_card(list,"POLITE IS FINE",
+        "Muse, please set your volume to thirty-five percent.",
+        "Can you / Could you can precede a command. Say one command by itself, without a separate question.");
+    command_guide_card(list,"LOCAL DEVICE CONTROLS",
+        "Supported commands change settings here, before the request reaches Muse.",
+        "Check the on-screen confirmation and setting. Other wording goes to normal Muse chat. A reply there does not mean a setting changed. The Muse website cannot run these local commands.");
+}
+void muse_settings_ui_open_commands(void)
+{
+    s_last_route=&COMMANDS;s_forward_route=NULL;
+    if(!s_commands)build_commands_page(s_tile);
+    show(s_commands);
+}
+static const page_t COMMANDS = { &s_commands, build_commands_page };
+
 static const page_t WEATHER = { &s_weather, build_weather_page };
 static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
@@ -1618,6 +1681,11 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+#if CONFIG_MUSE_MODULE_LLM
+    lv_obj_t *guide_value;
+    row(list, LV_SYMBOL_LIST, "Voice Commands", &guide_value, on_nav, (void *)&COMMANDS);
+    set_text(guide_value,"Guide");
+#endif
 #if CONFIG_MUSE_MODULE_LLM
     row(list, LV_SYMBOL_AUDIO, "Recorder", &s_home_recorder, on_nav, (void *)&RECORDER);
     set_text(s_home_recorder,"Connecting...");

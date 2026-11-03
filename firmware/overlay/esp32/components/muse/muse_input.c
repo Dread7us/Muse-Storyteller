@@ -849,6 +849,10 @@ static bool console_command(char *line, bool whole)
     }
 #if LV_USE_SNAPSHOT
     if(!strcmp(line,"ui=speed")){muse_ui_bench_speed();return true;}
+    if (!strcmp(line, "ui=commands")) {
+        muse_ui_bench_playback(29);
+        return true;
+    }
     if (!strcmp(line, "ui=sound")) {
         muse_ui_bench_sound();
         return true;

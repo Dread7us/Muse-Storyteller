@@ -1252,7 +1252,7 @@ void muse_ui_preview_volume(int pct){s_preview_volume=pct>=0 && pct<=100?pct:-1;
 #if LV_USE_SNAPSHOT
 static volatile int s_playback_test_action=-1;
 static int s_playback_test_volume=-1;
-void muse_ui_bench_playback(int action){if(action>=0 && action<=28)s_playback_test_action=action;}
+void muse_ui_bench_playback(int action){if(action>=0 && action<=29)s_playback_test_action=action;}
 #endif
 static void playback_pause_clicked(lv_event_t *e){
     (void)e;muse_state_poke();muse_module_llm_status_t st;muse_module_llm_status(&st);
@@ -1306,6 +1306,7 @@ static void playback_button_tick(void)
     if(s_playback_test_action>=0){
         int action=s_playback_test_action;s_playback_test_action=-1;
         if(action==28)s_conversation_version=UINT32_MAX;
+        if(action==29){if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);muse_settings_ui_open_commands();}
         if(action==26)playback_stop_clicked(NULL);
         if(action==27)playback_restart_clicked(NULL);
         if(action==1 && !lv_obj_has_state(s_pause_button,LV_STATE_DISABLED))lv_obj_send_event(s_pause_button,LV_EVENT_CLICKED,NULL);

@@ -28,6 +28,7 @@
 
 void muse_settings_ui_build(lv_obj_t *tile);
 void muse_settings_ui_open_sound(void);
+void muse_settings_ui_open_commands(void);
 void muse_settings_ui_open_home(void);
 void muse_settings_ui_open_weather(void);
 void muse_settings_ui_open_recorder(void);

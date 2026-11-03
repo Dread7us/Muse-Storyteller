@@ -99,6 +99,9 @@ Hold to talk → local speech recognition → supported device command?
                                            └─ No  → normal Muse conversation
 ```
 
+The same examples are available on the device in **Settings → Voice Commands**.
+The guide scrolls through volume, mute, brightness, speech speed and supported alternatives.
+
 ### How to say a command
 
 1. Keep the Core2 and Module LLM powered and ready.
