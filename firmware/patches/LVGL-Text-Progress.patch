@@ -1,0 +1,22 @@
+--- lvgl/src/draw/lv_draw_label.c
++++ lvgl/src/draw/lv_draw_label.c
+@@ -404,7 +404,11 @@
+ 
+             uint32_t letter;
+             uint32_t letter_next;
++            uint32_t previous_char_offset = next_char_offset;
+             lv_text_encoded_letter_next_2(bidi_txt, &letter, &letter_next, &next_char_offset);
++            /* A stale window length or truncated UTF-8 must never strand the
++             * drawing worker at a terminator while the UI waits for it. */
++            if(letter == 0 || next_char_offset <= previous_char_offset) break;
+ 
+             /* If recolor is enabled */
+             if((dsc->flag & LV_TEXT_FLAG_RECOLOR) != 0) {
+@@ -545,6 +549,7 @@
+ 
+         /*Go to next line*/
+         remaining_len -= line_end - line_start;
++        if(line_end <= line_start) break;
+         line_start = line_end;
+         if(remaining_len) {
+             line_end += lv_text_get_next_line(&dsc->text[line_start], remaining_len, font, NULL, &text_attributes);

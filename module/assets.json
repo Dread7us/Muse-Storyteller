@@ -1,0 +1,44 @@
+{
+  "notice": "Assets are not bundled. Review each upstream license; the Lessac model card links research-restricted data terms. No general redistribution or commercial-use permission is asserted.",
+  "assets": [
+    {
+      "name": "llm-model-whisper-base",
+      "version": "0.4",
+      "url": "https://repo.llm.m5stack.com/m5stack-apt-repo/pool/jammy/ax630c/v0.4/llm-model-whisper-base_0.4-m5stack1_arm64.deb",
+      "sha256": "254f658a9fd84a3533c77be14bb21e896f296acf4a8ca79683167a16335906c3",
+      "bytes": 259102368
+    },
+    {
+      "name": "llm-whisper",
+      "version": "1.8",
+      "url": "https://repo.llm.m5stack.com/m5stack-apt-repo/pool/jammy/ax630c/v1.8/llm-whisper_1.8-m5stack1_arm64.deb",
+      "sha256": "4a47acc83d4b51ce937bf76826da2daed78cef58fb741d1511a9022a75a766d8",
+      "bytes": 486934
+    },
+    {
+      "name": "lib-llm",
+      "version": "1.8",
+      "url": "https://repo.llm.m5stack.com/m5stack-apt-repo/pool/jammy/ax630c/v1.8/lib-llm_1.8-m5stack1_arm64.deb",
+      "sha256": "55dd2bb4ed47e3a0fd08e96e756d214bbca13741035bf3827da7de76779db9b1",
+      "bytes": 47348872
+    },
+    {
+      "name": "piper-linux-aarch64",
+      "url": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz",
+      "sha256": "fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb",
+      "bytes": 26004717
+    },
+    {
+      "name": "en_US-lessac-low.onnx",
+      "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/low/en_US-lessac-low.onnx",
+      "sha256": "f7d01dde371555732c4c314111ac79672b1a5ce2fc19266ab42178fd8df7f375",
+      "bytes": 63201294
+    },
+    {
+      "name": "en_US-lessac-low.onnx.json",
+      "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/low/en_US-lessac-low.onnx.json",
+      "sha256": "45754dfdebb3b8661c3fc564713772deec6e064feeb5b4e9594857dc7305193a",
+      "bytes": 4882
+    }
+  ]
+}

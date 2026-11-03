@@ -1,0 +1,11 @@
+Muse Storyteller — community edition maintained by Dread7us.
+
+Based on Muse Gadget SDK, Copyright (c) Meta Platforms, Inc. and affiliates,
+licensed under Apache License 2.0. Original source notices are retained.
+
+Uses external M5Stack StackFlow services, Whisper and Piper assets under their
+respective licenses. These native distributions and model weights are not bundled.
+LVGL modifications retain LVGL's MIT licensing; generated fonts retain upstream
+font notices and applicable font licenses. Upstream artwork is not relicensed here.
+
+No endorsement by the named upstream projects or hardware vendors is implied.

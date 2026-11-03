@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="530" viewBox="0 0 1100 530" role="img" aria-labelledby="title desc">
+  <title id="title">Muse Storyteller</title>
+  <desc id="desc">A community storytelling companion with offline speech, highlighted reading, and centered playback controls. An illustrative interface, not a device screenshot.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#171126"/><stop offset="1" stop-color="#0b1220"/></linearGradient>
+    <linearGradient id="rim" x2="1" y2="1"><stop stop-color="#bba1ef"/><stop offset="1" stop-color="#355965"/></linearGradient>
+    <linearGradient id="card" x2="0" y2="1"><stop stop-color="#302043"/><stop offset="1" stop-color="#171627"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#8b5cf6" stop-opacity=".22"/><stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/></radialGradient>
+    <filter id="shadow" x="-30%" y="-20%" width="160%" height="150%"><feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000" flood-opacity=".45"/></filter>
+  </defs>
+  <rect width="1100" height="530" rx="24" fill="url(#bg)"/>
+  <circle cx="815" cy="245" r="290" fill="url(#glow)"/>
+  <path d="M600 50V480M42 460H570" stroke="#a78bfa" stroke-opacity=".10"/>
+  <g fill="none" stroke="#aa8be7" stroke-opacity=".14"><circle cx="800" cy="250" r="202"/><circle cx="800" cy="250" r="226"/></g>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <rect x="56" y="47" width="243" height="27" rx="13" fill="#2d2340"/>
+    <circle cx="73" cy="61" r="4" fill="#5eead4"/>
+    <text x="87" y="65" font-size="11" font-weight="600" letter-spacing="1.3" fill="#d8ccf2">COMMUNITY HARDWARE EDITION</text>
+    <text x="56" y="139" font-size="49" font-weight="700" fill="#f8f5ff">Your stories.</text>
+    <text x="56" y="197" font-size="49" font-weight="700" fill="#c4a6ff">A better voice.</text>
+    <text x="58" y="240" font-size="20" fill="#bbb1cb">Listen naturally. Read along. Stay in control.</text>
+    <text x="58" y="276" font-size="15" fill="#8e9cad">Core2 v1.1 display + Module LLM speech</text>
+    <g font-size="11" font-weight="600" letter-spacing=".8">
+      <rect x="56" y="315" width="134" height="34" rx="9" fill="#39284f"/><text x="72" y="337" fill="#dfcaff">WHISPER BASE</text>
+      <rect x="201" y="315" width="82" height="34" rx="9" fill="#173b3a"/><text x="224" y="337" fill="#9cf4df">PIPER</text>
+      <rect x="294" y="315" width="139" height="34" rx="9" fill="#1c3043"/><text x="310" y="337" fill="#a1d9f6">WORD FOLLOW</text>
+    </g>
+    <g font-size="16" fill="#d9d2e5">
+      <circle cx="62" cy="387" r="3" fill="#5eead4"/><text x="77" y="393">Local listening and narration</text>
+      <circle cx="62" cy="420" r="3" fill="#a78bfa"/><text x="77" y="426">Pause, stop, replay — without another prompt</text>
+    </g>
+    <text x="58" y="488" font-size="13" fill="#8592a4">Built on Muse Gadget SDK • Maintained by Dread7us</text>
+    <g filter="url(#shadow)">
+      <rect x="660" y="39" width="328" height="411" rx="31" fill="url(#rim)"/>
+      <rect x="665" y="44" width="318" height="401" rx="27" fill="#0b0c12"/>
+      <rect x="680" y="64" width="288" height="349" rx="17" fill="#100f1c"/>
+      <text x="699" y="90" font-size="12" font-weight="600" letter-spacing="1" fill="#c6aff1">MUSE STORYTELLER</text>
+      <circle cx="947" cy="86" r="4" fill="#72e4bd"/>
+      <rect x="690" y="108" width="268" height="246" rx="13" fill="url(#card)" stroke="#8b68bc"/>
+      <path d="M690 144H958" stroke="#a78bfa" stroke-opacity=".35"/>
+      <text x="704" y="131" font-size="13" fill="#e5d9ff">Conversation / Max</text>
+      <rect x="861" y="117" width="82" height="20" rx="6" fill="#6c4b93"/><text x="871" y="131" font-size="11" fill="#f5edff">Following</text>
+      <g font-size="16" fill="#e9e3f2">
+        <text x="705" y="175" font-weight="600" fill="#d4b9ff">Muse</text>
+        <text x="705" y="205">The blue lantern</text>
+        <rect x="704" y="216" width="60" height="23" rx="4" fill="#aa80eb"/>
+        <text x="709" y="233" fill="#170e26">glowed</text><text x="772" y="233">beside the river.</text>
+        <text x="705" y="265">Beyond the trees,</text>
+        <text x="705" y="293">the village lights shone.</text>
+      </g>
+      <rect x="944" y="165" width="3" height="68" rx="1.5" fill="#b691ef"/>
+      <g font-size="11" fill="#ded4eb" text-anchor="middle"><text x="726" y="336">Older</text><text x="772" y="336">Next</text><text x="821" y="336">Save</text><text x="881" y="336">Library</text><text x="931" y="336">New</text></g>
+      <g font-size="12" fill="#f0e8ff" text-anchor="middle">
+        <rect x="690" y="368" width="82" height="29" rx="7" fill="#342442" stroke="#9271b6"/><text x="731" y="387">■ Stop</text>
+        <rect x="783" y="368" width="82" height="29" rx="7" fill="#503665" stroke="#a484cf"/><text x="824" y="387">Ⅱ Pause</text>
+        <rect x="876" y="368" width="82" height="29" rx="7" fill="#342442" stroke="#9271b6"/><text x="917" y="387">↻ Restart</text>
+      </g>
+      <g fill="#b495dd"><circle cx="749" cy="429" r="3"/><circle cx="824" cy="429" r="3"/><circle cx="899" cy="429" r="3"/></g>
+      <rect x="680" y="459" width="288" height="35" rx="10" fill="#15272b" stroke="#315c5e"/>
+      <circle cx="698" cy="476" r="4" fill="#5eead4"/><text x="712" y="481" font-size="12" font-weight="600" letter-spacing="1" fill="#99e9d8">MODULE LLM · LOCAL AUDIO</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,52 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Experimental Core2 v1.1: ESP32-D0WDQ6-V3, 16 MB flash, 8 MB quad PSRAM,
+# AXP2101 + INA3221, 320x240 touch LCD. Separate from the AXP192/v1.0 profile.
+# Local speech is supplied by the existing Module LLM on UART2 TX14/RX13;
+# the Core2 microphone base can be removed. Load after sdkconfig.muse.
+# Pin/rail references (also pinned in board_m5stack_core2_v11.c):
+# https://docs.m5stack.com/en/core/Core2%20v1.1
+# https://github.com/m5stack/M5Unified/blob/35903583211e1f39ca88920714525fbcd1eb714a/src/utility/Power_Class.inl
+# https://github.com/espressif/esp-bsp/blob/f259a6abd5808019b1903a422092a4234ca95a51/bsp/m5stack_core_2/include/bsp/m5stack_core_2.h
+CONFIG_IDF_TARGET="esp32"
+CONFIG_MUSE_BOARD_M5STACK_CORE2_V11=y
+CONFIG_ESP32_REV_MIN_3=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+CONFIG_SPIRAM=y
+# CONFIG_SPIRAM_IGNORE_NOTFOUND is not set
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+# CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY is not set
+# CONFIG_BTDM_CTRL_MODE_BTDM is not set
+
+CONFIG_BSP_PMU_AXP2101=y
+# CONFIG_BSP_PMU_AXP192 is not set
+CONFIG_MUSE_HATCH=y
+CONFIG_MUSE_MODULE_LLM=y
+# Exact task configurations verified in the reference hardware report (2026-10-25).
+# The additive musevoice bridge validates these tasks; no full catalog is used.
+CONFIG_MUSE_MODULE_LLM_ASR_SERVICE="asr"
+CONFIG_MUSE_MODULE_LLM_ASR_MODEL="sherpa-ncnn-streaming-zipformer-20M-2023-02-17"
+CONFIG_MUSE_MODULE_LLM_TTS_SERVICE="melotts"
+CONFIG_MUSE_MODULE_LLM_TTS_MODEL="melotts_zh-cn"
+CONFIG_LV_DEF_REFR_PERIOD=16
+# CONFIG_LV_USE_SNAPSHOT is not set
+# This profile never downloads models or uses a paid ASR/TTS endpoint.

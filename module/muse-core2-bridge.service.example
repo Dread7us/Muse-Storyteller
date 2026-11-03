@@ -1,0 +1,17 @@
+[Unit]
+Description=Muse Storyteller local speech bridge
+After=llm-sys.service llm-audio.service llm-asr.service llm-melotts.service
+
+[Service]
+Type=simple
+# Existing installations must retain their original ownership/state directory.
+ExecStart=/usr/bin/python3 /opt/muse-core2-bridge/muse_voice_bridge.py --serve --state-dir /var/lib/muse-core2-bridge/ownership
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=110
+KillMode=control-group
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target

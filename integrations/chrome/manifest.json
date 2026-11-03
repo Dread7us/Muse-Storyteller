@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Muse Storyteller Usage Check",
+  "version": "1.0.0",
+  "description": "Read the signed-in Muse Settings usage card for your local Storyteller device.",
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://muse.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "usage-card.js"
+      ],
+      "run_at": "document_idle",
+      "matches": [
+        "https://muse.ai/*"
+      ]
+    }
+  ]
+}
