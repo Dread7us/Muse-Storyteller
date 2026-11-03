@@ -17,6 +17,7 @@ RULES={
 
 # Exact publication allowlist: reviewed device UI only, no account or transcript data.
 REVIEWED_SCREENSHOTS={
+    'docs/assets/screenshots/idle.png': '71bd26e1215db102a7318db67b0008c5c2f7859f94b7a6add00bb8f905ca3b21',
     'docs/assets/screenshots/splash.png': 'befdcbc1c8cd59c5829ce382d5562a95ec0fbbe286bc21a3044debe1f5565286',
     'docs/assets/screenshots/voice-commands.png': '9b4bd853b37e6458861eeb708efa1972efdd1ca42268174ea308f6e48c15c47f',
     'docs/assets/screenshots/sound.png': 'd666a32d665dbf3e54d76965e034cbe533c53fcb19a24134e846ca81ee9ffeca',

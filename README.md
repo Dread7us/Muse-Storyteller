@@ -37,24 +37,31 @@ Real screen captures from **v0.2.0**. Click a screen to view it at full size.
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="docs/assets/screenshots/splash.png"><img src="docs/assets/screenshots/splash.png" width="320" alt="Gold-and-teal avatar splash with Muse Storyteller version 0.2.0"></a><br>
+      <a href="docs/assets/screenshots/splash.png"><img src="docs/assets/screenshots/splash.png" width="320" alt="Gold-and-teal welcome splash with version 0.2.0"></a><br>
       <strong>A welcome with personality</strong><br>
       <sub>Your color-avatar splash, a visible version, and tap to skip.</sub>
     </td>
     <td align="center" width="50%">
-      <a href="docs/assets/screenshots/voice-commands.png"><img src="docs/assets/screenshots/voice-commands.png" width="320" alt="On-device Voice Commands guide with Stop, Pause and Restart controls"></a><br>
-      <strong>Commands within reach</strong><br>
-      <sub>Learn what to say without leaving the device.</sub>
+      <a href="docs/assets/screenshots/idle.png"><img src="docs/assets/screenshots/idle.png" width="320" alt="Idle conversation card with avatar, Following label and first-use hint; illustrative status values"></a><br>
+      <strong>Ready for your first conversation</strong><br>
+      <sub>The post-splash layout, before speaking. Header readings use Status Preview examples.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <a href="docs/assets/screenshots/sound.png"><img src="docs/assets/screenshots/sound.png" width="320" alt="Sound settings showing the microphone meter and Mic level slider above the purple playback controls"></a><br>
+      <a href="docs/assets/screenshots/voice-commands.png"><img src="docs/assets/screenshots/voice-commands.png" width="320" alt="On-device Voice Commands guide and purple playback controls"></a><br>
+      <strong>Commands within reach</strong><br>
+      <sub>Learn what to say without leaving the device.</sub>
+    </td>
+    <td align="center" width="50%">
+      <a href="docs/assets/screenshots/sound.png"><img src="docs/assets/screenshots/sound.png" width="320" alt="Sound settings with live microphone meter and Mic level slider"></a><br>
       <strong>See it. Adjust it.</strong><br>
       <sub>A live microphone meter and familiar sliders in Sound.</sub>
     </td>
-    <td align="center" width="50%">
-      <a href="docs/assets/screenshots/startup.png"><img src="docs/assets/screenshots/startup.png" width="320" alt="Startup settings with Show splash toggle, software version and Preview splash button"></a><br>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <a href="docs/assets/screenshots/startup.png"><img src="docs/assets/screenshots/startup.png" width="320" alt="Startup settings with splash toggle, version and preview button"></a><br>
       <strong>Make startup yours</strong><br>
       <sub>Preview the splash or switch it off—your choice is saved.</sub>
     </td>

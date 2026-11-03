@@ -43,7 +43,9 @@ state is needed to build it.
 
 ## Device screenshots
 
-The README gallery contains four reviewed v0.2.0 device UI captures in
-`docs/assets/screenshots/`. They show project UI and branding, with no account-usage
-readout or conversation/recording contents. Screenshot publication does not relicense
+The README gallery contains five reviewed v0.2.0 device UI captures in
+`docs/assets/screenshots/`. They show project UI and branding, with no personal account-usage
+readout or conversation/recording contents. The idle screenshot uses the device’s
+built-in Status Preview with illustrative battery, Wi-Fi and usage readings; live
+status was restored afterward. Screenshot publication does not relicense
 third-party marks or the separately licensed splash branding described above.
