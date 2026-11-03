@@ -17,7 +17,7 @@
 
 <sub>Interface illustration—not a photograph, benchmark, or captured device screen.</sub>
 
-[Features](#what-this-edition-adds) · [Hardware](#the-hardware-you-need) · [Get started](#getting-started) · [Voice commands](#real-device-controls) · [Validation](docs/VALIDATION.md)
+[Features](#what-this-edition-adds) · [Hardware](#the-hardware-you-need) · [Get started](#getting-started) · [Voice commands](#voice-commands-that-actually-control-the-device) · [Validation](docs/VALIDATION.md)
 
 **Built on [Meta’s Muse Gadget SDK](https://github.com/facebookincubator/muse-gadget-sdk),
 [M5Stack StackFlow](https://github.com/m5stack/StackFlow), [Whisper](https://github.com/openai/whisper),
@@ -85,9 +85,31 @@ Windows Chrome helper, signed into Muse, with Module USB connected. The on-devic
 button says **Sync via PC**, distinguishes waiting from success/failure, and retains the
 last good reading if a check fails. [Usage helper details →](docs/USAGE.md)
 
-## Real device controls
+## Voice commands that actually control the device
 
-Hold the middle talk control, wait for **LISTENING**, and say a direct command:
+**Device settings use a local command handler that bypasses Muse’s chat service.**
+Muse’s online assistant does not directly control this hardware. After local Whisper
+recognizes your speech, the Core2 checks for a supported command **before** sending
+an ordinary question to Muse. A matching command changes the real setting and creates
+its confirmation locally; it does not send a Muse answer-generation request.
+
+```text
+Hold to talk → local speech recognition → supported device command?
+                                           ├─ Yes → apply setting + local confirmation
+                                           └─ No  → normal Muse conversation
+```
+
+### How to say a command
+
+1. Keep the Core2 and Module LLM powered and ready.
+2. Hold the middle talk control and wait for **LISTENING**.
+3. Say **one command by itself**, using an example below. Finish speaking, then release.
+4. Check the confirmation and the actual indicator or Settings value. When muted,
+   use the on-screen confirmation because the speaker is off.
+
+For the most reliable recognition, say **“Mute”** or **“Unmute”** as one word.
+Use these commands on the physical device; typing them into the Muse website/app
+does not invoke this local handler.
 
 | Say | Actual device action |
 |---|---|
@@ -95,11 +117,27 @@ Hold the middle talk control, wait for **LISTENING**, and say a direct command:
 | “Volume up” / “Volume down” | Changes volume by 10 percentage points within 0–100. |
 | “Mute” / “Unmute” | Toggles the speaker while retaining the selected volume; the header shows **MUTED** when off. |
 | “Set brightness to sixty percent.” | Saves brightness within 10–100%. |
-| “Set speech speed to slow.” | Selects Slow, Normal, or Fast. |
+| “Set speech speed to slow.” | Selects Slow. |
+| “Set speech speed to normal.” | Selects Normal. |
+| “Set speech speed to fast.” | Selects Fast. |
+| “Speak slower” / “Speak faster” | Selects Slow / Fast directly. |
 
-These commands are handled locally from **explicit user input**. Muse’s replies,
-quoted commands, and story text do not execute settings changes. Invalid values do not
-silently change the setting. Arbitrary settings/tool access from the Muse web app is not implemented.
+Volume accepts **0–100%** and brightness accepts **10–100%**, including spoken numbers
+such as “thirty-five.” Setting or stepping volume also enables the speaker; **Unmute**
+restores the retained volume. At 0%, the speaker remains silent until you raise it.
+
+Supported alternatives include **“Set volume to 35 percent,” “Set my speaker volume
+to forty-five percent,” “Turn the volume up,” “Turn volume down,” “Raise the volume,”
+“Lower the volume,” “Mute the speaker,” “Unmute the speaker,”** and
+**“Set screen brightness to sixty percent.”** You can prefix a command with
+**“Muse, please”**, for example: “Muse, please set your volume to thirty-five percent.”
+
+The handler recognizes a deliberately limited set of **explicit user commands**.
+Keep a command separate from a question or story request. Other wording can fall through
+to Muse, whose conversational response is not proof that a device setting changed.
+Muse’s replies, quoted commands, and story text do not execute settings changes.
+Recognized commands with invalid values leave the setting unchanged and show guidance.
+Arbitrary settings/tool access from the Muse web app is not implemented.
 
 The top speaker readout opens **Settings → Sound**. The left/right front controls navigate
 back/forward; the middle control remains hold-to-talk.
