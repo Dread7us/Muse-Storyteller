@@ -39,7 +39,7 @@ Real screen captures from **v0.2.0**. Click a screen to view it at full size.
     <td align="center" width="50%">
       <a href="docs/assets/screenshots/splash.png"><img src="docs/assets/screenshots/splash.png" width="320" alt="Gold-and-teal welcome splash with version 0.2.0"></a><br>
       <strong>A welcome with personality</strong><br>
-      <sub>Your color-avatar splash, a visible version, and tap to skip.</sub>
+      <sub>A brief welcome screen shows the software version. Tap anywhere to skip it.</sub>
     </td>
     <td align="center" width="50%">
       <a href="docs/assets/screenshots/idle.png"><img src="docs/assets/screenshots/idle.png" width="320" alt="Idle conversation card with avatar, Following label and first-use hint; illustrative status values"></a><br>
