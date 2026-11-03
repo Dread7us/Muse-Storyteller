@@ -4,7 +4,7 @@
   "files": {
     "esp32/components/muse/CMakeLists.txt": {
       "base_sha256": "1e8523b39365a8491c34fcb796caa4205e5210c9c8294e5909ec4d2c94948b0c",
-      "overlay_sha256": "4e89d5a4d55c60891c60fda0d9705de2965221618566b46d0be85d87eb2382ad"
+      "overlay_sha256": "8daa106ba46ef7a74c16efef916db210d607f5c1ec73edc44fe082a7ae518acc"
     },
     "esp32/components/muse/Kconfig": {
       "base_sha256": "7c5ca97e804ba0452ba660a8dc643304dc6c3dd40dd562736613eed4cbde2ad8",
@@ -56,7 +56,7 @@
     },
     "esp32/components/muse/muse_device_commands.h": {
       "base_sha256": null,
-      "overlay_sha256": "0a4515650896c5a7682a3d146c83a34166602a1d89d70712c8a244cb18a0cee9"
+      "overlay_sha256": "eb0490ae100a6e6573365feb4e88d01d2913d177eb8ac5daa8faca916ef4fbc5"
     },
     "esp32/components/muse/muse_input.c": {
       "base_sha256": "d234aa73d7dca4895f98fecffb0dacf24eed64e6d92286aa4bec784613bc264d",
@@ -116,19 +116,19 @@
     },
     "esp32/components/muse/muse_settings.c": {
       "base_sha256": "49f20c13b64a1dc187def5748928498e376b10e47091b6eca9588bcdb1781aa5",
-      "overlay_sha256": "d39e317759007c7559e1a7550c68655f497cc72a0ac921abf40d454eecd4132c"
+      "overlay_sha256": "567d52ef4ed17cccea5e8c55a60cd1437180aa0f528c72d849d83a8281f267d9"
     },
     "esp32/components/muse/muse_settings.h": {
       "base_sha256": "c1b8b25d2a5cfdc12f6c15a4244570c47353bb4a470988abe2efb81593aee202",
-      "overlay_sha256": "3483bc11cc902e6ecb00b1a0cf739a8c39a8abc9a997ce9741638385f85f4299"
+      "overlay_sha256": "5f2597270068a22425220b3c0b5c10f6a565b16a0b47a88f5546a744cf702285"
     },
     "esp32/components/muse/muse_settings_ui.c": {
       "base_sha256": "a32cc685b93149cc091daf46d59ec436e733ca325f4fe335572dbcefaa7c917b",
-      "overlay_sha256": "68286870d04b18546e2ed895a7fbc42e8ce2681a8e9fb5963b7e565f6978a6c3"
+      "overlay_sha256": "4f4eb305cab29733c98f00df1c45bdb7269189650dd761058160e8a7f529a68b"
     },
     "esp32/components/muse/muse_settings_ui.h": {
       "base_sha256": "2d0a0d1ef217163abe299872434ae8859f3f7d7d01c1996fd0cbd7e0178234f9",
-      "overlay_sha256": "29385ed94d0c822331302c8feb08b48e0cd028b913f74d2854e68b0571ce2108"
+      "overlay_sha256": "796dde1b71008ded4ae5f8cea1a2abb0343cdedd15ad48aa3f49037e3da68545"
     },
     "esp32/components/muse/muse_state.c": {
       "base_sha256": "1aae26a6ed70615ee1040fbd1eb48e93ca0019222fc06a72c4273182323a37f9",
@@ -140,11 +140,11 @@
     },
     "esp32/components/muse/muse_ui.c": {
       "base_sha256": "659b8c307b1fef346015d501f1edd956f5ece70fc73128454bade5549a549d07",
-      "overlay_sha256": "080a60ff65941e8965f4e4fd368a37f160f18ec1af86aa95d68483e481bca57f"
+      "overlay_sha256": "8a9e4ff8d3928cf0c6bc469e0d1428e16cc78cb3dfe1bdaecfda9241d5c75e20"
     },
     "esp32/components/muse/muse_ui.h": {
       "base_sha256": "17e3fe584c22b46bb5f68101a377a38c8a1c263c55cce6e7f7f84a3c0e78f10c",
-      "overlay_sha256": "4ca166b7a4abaccfd326064bee9b135e4eff26c4411f16dcee1d48f39902160a"
+      "overlay_sha256": "36618a4a76af1148f8ee602bbcc02fdbe44d1313a6987a87207fcae4a95805d7"
     },
     "esp32/components/muse/muse_voice.c": {
       "base_sha256": "a1b0314c2e4cac1025272b63551e9df6f4dd985105bfd74b44f562b73bc0bf45",
@@ -205,6 +205,22 @@
     "esp32/components/muse/storyteller_weather_config.h": {
       "base_sha256": null,
       "overlay_sha256": "e2e1a98e1f6a3d4553949642b1ca2d94226f394a964c62371bbee38da2ee1d93"
+    },
+    "esp32/components/muse/muse_storyteller_version.h": {
+      "base_sha256": null,
+      "overlay_sha256": "f7ef1c61fabd38fee68c8ed9bbd27dd09797745bee9688ab3bffe7635e24cdb2"
+    },
+    "esp32/components/muse/muse_startup.h": {
+      "base_sha256": null,
+      "overlay_sha256": "a741e0d20d7c7aebcaf3e82d00d7ba0083bffdcf7a5faba4d0a21456b59a8022"
+    },
+    "esp32/components/muse/muse_startup.c": {
+      "base_sha256": null,
+      "overlay_sha256": "c4a00b93dfe0a01e869203398b63b5be426711e9891bd32b7dacdadd3de8752f"
+    },
+    "esp32/components/muse/muse_splash_art.c": {
+      "base_sha256": null,
+      "overlay_sha256": "125bebc05a4823a2187fdf055661a29eb681972d4d9b14266a52c3a5e37fa64a"
     }
   }
 }

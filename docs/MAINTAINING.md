@@ -27,3 +27,11 @@ Keep these local: SDK/account tokens, browser sessions, native-host registration
 weather coordinates, Wi-Fi/NVS images, ownership ledgers, SQLite archives, recordings,
 logs, model downloads, and complete device backups. Never upload a full workspace or
 `/var/lib` tree as a convenient release archive.
+
+## Edition versions
+
+`firmware/overlay/esp32/components/muse/muse_storyteller_version.h` is the single
+source of the on-device edition version. **Increment it for every shipped firmware
+update**: patch for fixes, minor for features. Update the README and CHANGELOG for that
+release. Test-only rebuilds do not need a bump. Keep this version separate from the
+upstream SDK/OTA version; changing an OTA tag has different compatibility implications.

@@ -2,6 +2,8 @@
 
 # Muse Storyteller
 
+**Edition v0.2.0**
+
 ### A small companion. A better voice. Stories worth listening to.
 
 [![Hardware](https://img.shields.io/badge/Core2-v1.1-A78BFA?style=flat-square)](docs/HARDWARE.md)
@@ -111,6 +113,7 @@ The guide scrolls through volume, mute, brightness, speech speed and supported a
    use the on-screen confirmation because the speaker is off.
 
 For the most reliable recognition, say **“Mute”** or **“Unmute”** as one word.
+If recognition splits “unmute” into **“on mute”**, that exact command is also accepted as Unmute.
 Use these commands on the physical device; typing them into the Muse website/app
 does not invoke this local handler.
 
@@ -142,8 +145,18 @@ Muse’s replies, quoted commands, and story text do not execute settings change
 Recognized commands with invalid values leave the setting unchanged and show guidance.
 Arbitrary settings/tool access from the Muse web app is not implemented.
 
-The top speaker readout opens **Settings → Sound**. The left/right front controls navigate
+Tap the top **MUTED** speaker readout to **unmute immediately**, retaining the selected
+volume and staying on the current screen. When the speaker is enabled, the same
+icon/readout opens **Settings → Sound**. The left/right front controls navigate
 back/forward; the middle control remains hold-to-talk.
+
+## Startup screen and version
+
+**Settings → Startup** lets you disable **Show splash**, preview the welcome screen,
+and see the edition version. The color-avatar splash lasts about two seconds, can be
+skipped with a tap, and uses a UI timer while initialization continues. The same edition
+version appears at the bottom of Settings. It is independent of the SDK’s OTA build tag.
+[Release history](CHANGELOG.md) · [Versioning rules](docs/MAINTAINING.md#edition-versions)
 
 ## Getting started
 

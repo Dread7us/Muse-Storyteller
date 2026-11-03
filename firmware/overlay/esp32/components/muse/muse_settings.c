@@ -41,6 +41,7 @@ static struct {
     uint8_t brightness;
     uint16_t sleep_s;
     bool recorder_sleep_enforced;
+    bool startup_splash;
     bool wifi_on;
     bool ble_on;
     char ssid[MUSE_SSID_MAX + 1];
@@ -58,6 +59,7 @@ static struct {
     .brightness = 100,
     .sleep_s = 120,
     .recorder_sleep_enforced = true,
+    .startup_splash = true,
     .wifi_on = true,
     .host = DEFAULT_HOST,
 };
@@ -143,6 +145,7 @@ esp_err_t muse_settings_init(void)
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
     if(nvs_get_u8(s_nvs,"rec_sleep",&b)==ESP_OK)s.recorder_sleep_enforced=b!=0;
+    if(nvs_get_u8(s_nvs,"boot_splash",&b)==ESP_OK)s.startup_splash=b!=0;
     if (nvs_get_u8(s_nvs, "wifi_on", &b) == ESP_OK) {
         s.wifi_on = b;
     }
@@ -169,6 +172,8 @@ void muse_settings_set_listener(muse_setting_cb_t cb)
     s_listener = cb;
 }
 
+bool muse_settings_startup_splash(void){return s.startup_splash;}
+void muse_settings_set_startup_splash(bool on){s.startup_splash=on;save_u8("boot_splash",on);}
 int muse_settings_speech_speed(void){return s.speech_speed;}
 void muse_settings_set_speech_speed(int speed){s.speech_speed=clampi(speed,0,2);save_u8("speech_speed",s.speech_speed);}
 int muse_settings_volume(void) { return s.volume; }

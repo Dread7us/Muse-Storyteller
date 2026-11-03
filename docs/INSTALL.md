@@ -16,7 +16,7 @@ or installs a service automatically. The firmware itself saves settings and reco
 
 ## Prepare and build
 
-See [BUILD.md](BUILD.md). The public build excludes the maintainer’s location and artwork,
+See [BUILD.md](BUILD.md). The public build excludes the maintainer’s location and custom animated Muse avatar,
 and disables screenshot/bench controls by default. It therefore is not byte-identical to
 the private reference application that produced the development hardware reports.
 

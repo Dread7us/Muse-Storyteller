@@ -35,6 +35,7 @@
 #include "muse_keypad.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_storyteller_version.h"
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_ui.h"
@@ -43,6 +44,7 @@
 #include "muse_weather.h"
 #if CONFIG_MUSE_MODULE_LLM
 #include "muse_module_llm.h"
+#include "muse_startup.h"
 #include "muse_memory.h"
 #define HAS_MODULE_SPEAKER true
 #else
@@ -73,7 +75,7 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text, *s_weather, *s_commands;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text, *s_weather, *s_commands, *s_startup;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -90,7 +92,8 @@ static const page_t SOUND,WEATHER,COMMANDS;
 static lv_obj_t *s_recorder_page,*s_recorder_list,*s_rec_status,*s_rec_note,*s_rec_start,*s_rec_stop,*s_rec_continue,*s_rec_read,*s_rec_audio_row,*s_rec_audio_sw,*s_rec_text,*s_rec_page_label,*s_rec_prevpage,*s_rec_nextpage,*s_rec_older,*s_rec_newer,*s_rec_original_button,*s_rec_nav,*s_rec_sleep_sw,*s_home_recorder;
 static bool s_rec_audio_choice=true,s_rec_reading,s_rec_scroll_pending,s_rec_original;
 static int64_t s_rec_poll_at;
-static const page_t RECORDER;
+static const page_t RECORDER,STARTUP;
+static lv_obj_t *s_startup_sw,*s_home_startup;
 static void build_recorder_page(lv_obj_t *tile);
 static void tick_recorder(void);
 static lv_obj_t *s_rec_progress,*s_rec_progress_text;
@@ -401,7 +404,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text, &s_weather, &s_commands };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text, &s_weather, &s_commands, &s_startup };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1230,7 +1233,7 @@ void muse_settings_ui_bench_volume(int pct,bool release)
 void muse_settings_ui_transport_visible(bool visible){
  if(!s_current || muse_board->round)return;
  lv_obj_t *list=lv_obj_get_user_data(s_current);if(!list)return;
- int height=muse_board->height-lv_obj_get_y(list)-(visible?32:0);
+ int height=muse_board->height-lv_obj_get_y(list)-(visible?MUSE_TRANSPORT_RESERVED_PX:0);
  if(lv_obj_get_height(list)!=height)lv_obj_set_height(list,height);
 }
 static void tick_sound(void)
@@ -1589,6 +1592,24 @@ void muse_settings_ui_open_recorder(void){}
 /* ---------- Home ---------- */
 
 #if CONFIG_MUSE_MODULE_LLM
+static void startup_changed(lv_event_t *e){muse_settings_set_startup_splash(lv_obj_has_state(lv_event_get_target(e),LV_STATE_CHECKED));}
+static void startup_preview(lv_event_t *e){(void)e;muse_startup_show(true);}
+static void build_startup_page(lv_obj_t *tile){
+    lv_obj_t *list;s_startup=page(tile,"STARTUP SCREEN",true,&list);
+    s_startup_sw=switch_row(list,"Show splash",muse_settings_startup_splash(),startup_changed);
+    note(list,"Version " MUSE_STORYTELLER_VERSION "  /  Tap splash to skip");
+    row(list,LV_SYMBOL_PLAY,"Preview splash",NULL,startup_preview,NULL);
+}
+void muse_settings_ui_open_startup(void){
+    s_last_route=&STARTUP;s_forward_route=NULL;if(!s_startup)build_startup_page(s_tile);show(s_startup);
+}
+#if LV_USE_SNAPSHOT
+void muse_settings_ui_bench_startup(bool on){
+    muse_settings_ui_open_startup();lv_obj_set_state(s_startup_sw,LV_STATE_CHECKED,on);
+    lv_obj_send_event(s_startup_sw,LV_EVENT_VALUE_CHANGED,NULL);
+}
+#endif
+static const page_t STARTUP={&s_startup,build_startup_page};
 static const page_t RECORDER={&s_recorder_page,build_recorder_page};
 #endif
 /* Read-only guide: allocated on entry and released by normal page navigation. */
@@ -1629,7 +1650,7 @@ static void build_commands_page(lv_obj_t *tile)
         "Steps change by 10. Setting volume also unmutes. At 0%, raise it to hear audio.");
     command_guide_card(list,"MUTE & UNMUTE",
         "Mute.\nUnmute.",
-        "Say either as one word. MUTED appears in the header. Unmute keeps your selected volume.");
+        "Unmute also works if heard as on mute. Tap MUTED in the header to unmute. Your selected volume is kept.");
     command_guide_card(list,"BRIGHTNESS  /  10-100%",
         "Set brightness to 60 percent.",
         "You can also say: Set screen brightness to sixty percent.");
@@ -1685,6 +1706,7 @@ static void build_home(lv_obj_t *tile)
     lv_obj_t *guide_value;
     row(list, LV_SYMBOL_LIST, "Voice Commands", &guide_value, on_nav, (void *)&COMMANDS);
     set_text(guide_value,"Guide");
+    row(list,LV_SYMBOL_IMAGE,"Startup",&s_home_startup,on_nav,(void *)&STARTUP);
 #endif
 #if CONFIG_MUSE_MODULE_LLM
     row(list, LV_SYMBOL_AUDIO, "Recorder", &s_home_recorder, on_nav, (void *)&RECORDER);
@@ -1706,6 +1728,7 @@ static void build_home(lv_obj_t *tile)
 static void tick_home(void)
 {
 #if CONFIG_MUSE_MODULE_LLM
+    set_text(s_home_startup,muse_settings_startup_splash()?"On":"Off");
     muse_recorder_view_t rec;muse_memory_recorder_copy(&rec);
     char rec_text[32];uint32_t rec_color=COLOR_DIM;
     if(rec.active){
@@ -1772,7 +1795,7 @@ static void tick_home(void)
     }
 #endif
 
-    snprintf(buf, sizeof(buf), "Muse %s  -  %s", esp_app_get_description()->version,
+    snprintf(buf, sizeof(buf), "Storyteller %s  -  %s", MUSE_STORYTELLER_VERSION,
              w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
     set_text(s_about, buf);
 }

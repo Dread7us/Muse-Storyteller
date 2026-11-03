@@ -52,6 +52,8 @@ typedef void (*muse_setting_cb_t)(muse_setting_t what);
 esp_err_t muse_settings_init(void);
 void muse_settings_set_listener(muse_setting_cb_t cb);
 
+bool muse_settings_startup_splash(void);
+void muse_settings_set_startup_splash(bool on);
 int muse_settings_speech_speed(void); /* 0 slow, 1 normal, 2 fast */
 void muse_settings_set_speech_speed(int speed);
 int muse_settings_volume(void);         /* 0..100 */

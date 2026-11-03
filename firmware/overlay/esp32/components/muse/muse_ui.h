@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#define MUSE_TRANSPORT_RESERVED_PX 35
 #include <stdint.h>
 
 #include "esp_err.h"

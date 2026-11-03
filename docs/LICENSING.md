@@ -32,3 +32,11 @@ rights claim about the weights. Obtain and review assets directly from their pub
 No voice weights, vendor package archives, executables, personal recordings, or firmware
 flash images are distributed in this repository. `module/assets.json` records identifiers,
 download links and checksums for reproducibility; it does not relicense the downloads.
+
+## Splash branding
+
+The optional splash uses a compact display encoding of the owner's public generated
+avatar. The encoded image data in `muse_splash_art.c` is a separate branding asset,
+excluded from the Apache code license; its integration/descriptor code remains project
+code. It is not upstream Muse artwork. No personal Muse avatar renderer or pairing
+state is needed to build it.

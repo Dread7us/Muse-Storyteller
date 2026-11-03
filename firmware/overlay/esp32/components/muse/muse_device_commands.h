@@ -33,7 +33,8 @@ static inline muse_device_command_t muse_device_parse(const char *input){
  if(!strncmp(p,"can you ",8))p+=8;else if(!strncmp(p,"could you ",10))p+=10;
  if(!strncmp(p,"please ",7))p+=7;
  if(!strcmp(p,"mute")||!strcmp(p,"mute the speaker")||!strcmp(p,"mute speaker"))return (muse_device_command_t){MUSE_DEVICE_MUTE,1};
- if(!strcmp(p,"unmute")||!strcmp(p,"unmute the speaker")||!strcmp(p,"unmute speaker"))return (muse_device_command_t){MUSE_DEVICE_MUTE,0};
+ /* Common English ASR split of "unmute", accepted only as a complete command. */
+ if(!strcmp(p,"unmute")||!strcmp(p,"unmute the speaker")||!strcmp(p,"unmute speaker")||!strcmp(p,"on mute")||!strcmp(p,"on mute the speaker")||!strcmp(p,"on mute speaker"))return (muse_device_command_t){MUSE_DEVICE_MUTE,0};
  if(!strcmp(p,"turn the volume up")||!strcmp(p,"volume up")||!strcmp(p,"turn volume up")||!strcmp(p,"raise the volume"))return (muse_device_command_t){MUSE_DEVICE_VOLUME_STEP,10};
  if(!strcmp(p,"turn the volume down")||!strcmp(p,"volume down")||!strcmp(p,"turn volume down")||!strcmp(p,"lower the volume"))return (muse_device_command_t){MUSE_DEVICE_VOLUME_STEP,-10};
  if(!strcmp(p,"speak slower"))return (muse_device_command_t){MUSE_DEVICE_SPEED,0};

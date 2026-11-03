@@ -52,6 +52,8 @@
 #include "muse_reader_layout.h"
 #include "src/misc/lv_text_private.h"
 #include "muse_module_llm.h"
+#include "muse_startup.h"
+#include "muse_storyteller_version.h"
 #define HAS_MODULE_AUDIO true
 #else
 #define HAS_MODULE_AUDIO false
@@ -1174,10 +1176,10 @@ static void conversation_size(void)
     s_reader_decor_dirty=true;s_reader_layout_dirty=true;s_reader_layout_valid=false;
     unsigned mode = s_conversation_size_mode;
     int w = s_w - (mode == 2 ? 8 : 16);
-    int h = mode == 2 ? s_h - 48 : mode == 1 ? 94 : 74;
-    lv_obj_set_pos(s_conversation, mode == 2 ? 4 : 8, mode == 2 ? 46 : s_h - 30 - h);
+    int h = mode == 2 ? s_h - 48 - (s_transport_visible ? MUSE_TRANSPORT_RESERVED_PX : 0) : mode == 1 ? 94 : 74;
+    lv_obj_set_pos(s_conversation, mode == 2 ? 4 : 8, mode == 2 ? 46 : s_h - (s_transport_visible ? MUSE_TRANSPORT_RESERVED_PX : 30) - h);
     lv_obj_set_size(s_conversation, w, h);
-    int transport=mode==2 && s_transport_visible?32:0;
+    int transport=0; /* the container already reserves the playback row */
     lv_obj_set_size(s_conversation_body, w - 18, h - 38 - (mode == 2 ? 28 : 0) - transport);
     if(s_archive_footer){
         lv_obj_set_pos(s_archive_footer,7,h-30-transport);lv_obj_set_width(s_archive_footer,w-14);
@@ -1252,7 +1254,7 @@ void muse_ui_preview_volume(int pct){s_preview_volume=pct>=0 && pct<=100?pct:-1;
 #if LV_USE_SNAPSHOT
 static volatile int s_playback_test_action=-1;
 static int s_playback_test_volume=-1;
-void muse_ui_bench_playback(int action){if(action>=0 && action<=29)s_playback_test_action=action;}
+void muse_ui_bench_playback(int action){if(action>=0 && action<=33)s_playback_test_action=action;}
 #endif
 static void playback_pause_clicked(lv_event_t *e){
     (void)e;muse_state_poke();muse_module_llm_status_t st;muse_module_llm_status(&st);
@@ -1261,10 +1263,31 @@ static void playback_pause_clicked(lv_event_t *e){
 }
 static void playback_stop_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(false);}
 static void playback_restart_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(true);}
-static lv_obj_t *transport_button(int x,const char *text,lv_event_cb_t callback){
- lv_obj_t *b=lv_button_create(lv_screen_active());lv_obj_set_pos(b,x,s_h-28);lv_obj_set_size(b,88,26);lv_obj_set_style_radius(b,7,0);lv_obj_set_style_pad_all(b,0,0);lv_obj_set_style_bg_color(b,lv_color_hex(0x352345),0);lv_obj_set_style_border_color(b,lv_color_hex(0x8864b0),0);lv_obj_set_style_border_width(b,1,0);lv_obj_t *l=make_label(b,&lv_font_montserrat_14,0xf4efff);lv_label_set_text(l,text);lv_obj_center(l);lv_obj_set_ext_click_area(b,1);lv_obj_add_event_cb(b,callback,LV_EVENT_CLICKED,NULL);lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN);return b;
+static lv_obj_t *transport_button(int x,int width,const char *text,lv_event_cb_t callback,bool primary){
+    lv_obj_t *b=lv_button_create(lv_screen_active());lv_obj_remove_style_all(b);
+    lv_obj_set_pos(b,x,s_h-31);lv_obj_set_size(b,width,29);lv_obj_set_style_radius(b,7,0);
+    lv_obj_set_style_pad_all(b,0,0);lv_obj_set_style_bg_opa(b,LV_OPA_COVER,0);
+    lv_obj_set_style_bg_color(b,lv_color_hex(primary?0x503665:0x342442),0);
+    lv_obj_set_style_border_color(b,lv_color_hex(primary?0xa484cf:0x9271b6),0);
+    lv_obj_set_style_border_width(b,1,0);
+    lv_obj_set_style_bg_color(b,lv_color_hex(primary?0x654780:0x493256),LV_STATE_PRESSED);
+    lv_obj_set_style_opa(b,LV_OPA_50,LV_STATE_DISABLED);
+    lv_obj_t *l=make_label(b,&lv_font_montserrat_14,0xf0e8ff);lv_label_set_text(l,text);lv_obj_center(l);
+    lv_obj_set_ext_click_area(b,1);lv_obj_remove_flag(b,LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(b,callback,LV_EVENT_CLICKED,NULL);lv_obj_add_flag(b,LV_OBJ_FLAG_HIDDEN);return b;
 }
-static void playback_sound_clicked(lv_event_t *e){(void)e;muse_state_poke();if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);muse_settings_ui_open_sound();}
+static void playback_sound_clicked(lv_event_t *e)
+{
+    (void)e;
+    muse_state_poke();
+    if(!muse_settings_speaker_on()) {
+        muse_settings_set_speaker_on(true);
+        muse_module_llm_set_playback_volume(muse_settings_volume());
+        return;
+    }
+    if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);
+    muse_settings_ui_open_sound();
+}
 static void playback_settings_clicked(lv_event_t *e){(void)e;muse_state_poke();if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);muse_settings_ui_open_home();}
 static void status_popup(lv_event_t *e);
 static void usage_check_clicked(lv_event_t *e);
@@ -1273,10 +1296,11 @@ static void playback_usage_popup(lv_event_t *e){(void)e;status_popup(e);}
 static void playback_button_build(void)
 {
     if(s_w<300)return;
-    int x=(s_w-280)/2;
-    s_stop_button=transport_button(x,LV_SYMBOL_STOP " Stop",playback_stop_clicked);
-    s_pause_button=transport_button(x+96,LV_SYMBOL_PAUSE " Pause",playback_pause_clicked);s_pause_label=lv_obj_get_child(s_pause_button,0);
-    s_restart_button=transport_button(x+192,LV_SYMBOL_REFRESH " Restart",playback_restart_clicked);
+    const int gap=12,width=(s_w-16-2*gap)/3;
+    int x=(s_w-(3*width+2*gap))/2;
+    s_stop_button=transport_button(x,width,LV_SYMBOL_STOP " Stop",playback_stop_clicked,false);
+    s_pause_button=transport_button(x+width+gap,width,LV_SYMBOL_PAUSE " Pause",playback_pause_clicked,true);s_pause_label=lv_obj_get_child(s_pause_button,0);
+    s_restart_button=transport_button(x+2*(width+gap),width,LV_SYMBOL_REFRESH " Restart",playback_restart_clicked,false);
     s_settings_shortcut=lv_button_create(lv_screen_active());lv_obj_set_pos(s_settings_shortcut,s_w-30,1);lv_obj_set_size(s_settings_shortcut,28,20);
     lv_obj_set_style_radius(s_settings_shortcut,5,0);lv_obj_set_style_pad_all(s_settings_shortcut,0,0);lv_obj_set_style_bg_color(s_settings_shortcut,lv_color_hex(0x241832),0);lv_obj_set_style_border_color(s_settings_shortcut,lv_color_hex(0x6d508f),0);lv_obj_set_style_border_width(s_settings_shortcut,1,0);
     lv_obj_t *gear=make_label(s_settings_shortcut,&lv_font_montserrat_14,0xd9c4ff);lv_label_set_text(gear,LV_SYMBOL_SETTINGS);lv_obj_center(gear);
@@ -1307,6 +1331,9 @@ static void playback_button_tick(void)
         int action=s_playback_test_action;s_playback_test_action=-1;
         if(action==28)s_conversation_version=UINT32_MAX;
         if(action==29){if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);muse_settings_ui_open_commands();}
+        if(action==30){if(s_tv)lv_tileview_set_tile(s_tv,s_settings,LV_ANIM_OFF);muse_settings_ui_open_startup();}
+        if(action==31)muse_startup_show(true);
+        if(action==32||action==33)muse_settings_ui_bench_startup(action==33);
         if(action==26)playback_stop_clicked(NULL);
         if(action==27)playback_restart_clicked(NULL);
         if(action==1 && !lv_obj_has_state(s_pause_button,LV_STATE_DISABLED))lv_obj_send_event(s_pause_button,LV_EVENT_CLICKED,NULL);
@@ -1332,6 +1359,7 @@ static void playback_button_tick(void)
         if(action==6 && s_library_narration_test){if(s_playback_test_volume<0)s_playback_test_volume=muse_settings_volume();muse_settings_ui_bench_volume(s_playback_test_volume/2,false);}
         if(action==7 && s_playback_test_volume>=0){muse_settings_ui_bench_volume(s_playback_test_volume,true);s_playback_test_volume=-1;}
         muse_module_llm_status(&st);
+        printf("@startup {\"enabled\":%s,\"visible\":%s,\"version\":\"%s\"}\n",muse_settings_startup_splash()?"true":"false",muse_startup_visible()?"true":"false",MUSE_STORYTELLER_VERSION);
         printf("@playback_ui {\"speaker\":%s,\"restart_available\":%s,\"transport_busy\":%s,\"brightness\":%d,\"speed\":%d,\"paused\":%s,\"requested\":%s,\"visible\":%s,\"reader_size\":%d,\"settings\":%s,\"subpage\":%s,\"volume\":%d,\"preview_volume\":%d,\"touch_presses\":%lu}\n",muse_settings_speaker_on()?"true":"false",muse_chat_playback_can_restart()?"true":"false",muse_chat_playback_busy()?"true":"false",muse_settings_brightness(),muse_settings_speech_speed(),st.paused?"true":"false",st.pause_requested?"true":"false",visible?"true":"false",s_conversation_size_mode,s_tv && lv_tileview_get_tile_active(s_tv)==s_settings?"true":"false",muse_settings_ui_in_subpage()?"true":"false",muse_settings_volume(),s_preview_volume,(unsigned long)s_touch_presses);fflush(stdout);
         uint32_t model_version=0;unsigned model_count=0;size_t model_bytes=0;muse_conversation_diagnostic(&model_version,&model_count,&model_bytes);
         printf("@conversation_ui {\"version\":%lu,\"count\":%u,\"bytes\":%u,\"shown_version\":%lu,\"rendered_chars\":%u,\"touching\":%s,\"preview\":%s,\"archive\":%s}\n",(unsigned long)model_version,model_count,(unsigned)model_bytes,(unsigned long)s_conversation_version,(unsigned)s_reader_point_count,s_indev&&lv_indev_get_state(s_indev)==LV_INDEV_STATE_PRESSED?"true":"false",s_conversation_preview?"true":"false",s_archive_visible?"true":"false");fflush(stdout);
@@ -2956,6 +2984,9 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
+#if CONFIG_MUSE_MODULE_LLM
+    muse_startup_show(false);
+#endif
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();

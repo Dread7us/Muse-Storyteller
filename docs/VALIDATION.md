@@ -20,6 +20,27 @@ The control tests used a synthetic local story and transient reader entries, wit
 posting a new Muse question or adding test messages to the saved archive. Public tests
 also use synthetic fixtures. Personal clips, transcripts and device reports are not published.
 
+## Edition 0.2.0 reference checks
+
+The application-only image was written with digest verification, then observed through
+one healthy Core2 boot, a ready Module bridge and advancing UI heartbeats. The saved
+30% volume was retained. No NVS erase was performed.
+
+Device callback checks confirmed that a muted-header tap unmutes without opening
+Settings, while an enabled-header tap opens Sound. The exact “on mute” alias was
+handled locally. The Voice Commands guide and compact Startup page were captured
+from the device. Both splash preferences survived separate guarded reboots; the final
+color-avatar preview and visible version were inspected on the corrected image.
+
+Pause and Resume were acknowledged by the playback owner; Stop returned it to Ready,
+and Restart began local playback again. The final transport screenshot was inspected
+for equal spacing, purple colors and the paused Resume label. Test entries were cleared
+and the previous mute state was restored.
+
+The public source passed publication checks, portable tests and ESP32 compiler checks
+for the changed UI/settings sources plus the new startup and encoded-avatar sources.
+Native C command-boundary cases passed on the Module as an additional check.
+
 ## Recognition comparison
 
 The same roughly thirty-second English clip was processed by the original recognizer,
