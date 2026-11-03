@@ -43,7 +43,7 @@ state is needed to build it.
 
 ## Device screenshots
 
-The README gallery contains five reviewed v0.2.0 device UI captures in
+The README gallery contains four reviewed v0.2.0 device UI captures in
 `docs/assets/screenshots/`. They show project UI and branding, with no personal account-usage
 readout or conversation/recording contents. The idle screenshot uses the device’s
 built-in Status Preview with illustrative battery, Wi-Fi and usage readings; live

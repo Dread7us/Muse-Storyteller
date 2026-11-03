@@ -59,13 +59,6 @@ Real screen captures from **v0.2.0**. Click a screen to view it at full size.
       <sub>A live microphone meter and familiar sliders in Sound.</sub>
     </td>
   </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <a href="docs/assets/screenshots/startup.png"><img src="docs/assets/screenshots/startup.png" width="320" alt="Startup settings with splash toggle, version and preview button"></a><br>
-      <strong>Make startup yours</strong><br>
-      <sub>Preview the splash or switch it off—your choice is saved.</sub>
-    </td>
-  </tr>
 </table>
 
 The purple transport row uses equally sized **Stop · Pause/Resume · Restart** buttons.

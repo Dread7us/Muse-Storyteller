@@ -21,7 +21,6 @@ REVIEWED_SCREENSHOTS={
     'docs/assets/screenshots/splash.png': 'befdcbc1c8cd59c5829ce382d5562a95ec0fbbe286bc21a3044debe1f5565286',
     'docs/assets/screenshots/voice-commands.png': '9b4bd853b37e6458861eeb708efa1972efdd1ca42268174ea308f6e48c15c47f',
     'docs/assets/screenshots/sound.png': 'd666a32d665dbf3e54d76965e034cbe533c53fcb19a24134e846ca81ee9ffeca',
-    'docs/assets/screenshots/startup.png': 'e5f6415e076f93e14db322def7e1877ae46edb2ac93b81fd73b858d5b0e3f2f2',
 }
 
 def paths():
