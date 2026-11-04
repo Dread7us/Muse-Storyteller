@@ -2629,6 +2629,18 @@ static void update_status(muse_mode_t mode, float now)
         if(!preparing_since)preparing_since=now;
         snprintf(preparing_label,sizeof(preparing_label),"PREPARING VOICE %us",(unsigned)(now-preparing_since));name=preparing_label;
     }else preparing_since=0;
+    /* Wi-Fi connectivity alone must never advertise a usable microphone. */
+    if(mode==MUSE_MODE_IDLE || mode==MUSE_MODE_BOOT || voice_state.state==MUSE_MODULE_LLM_DISCOVERING){
+        if(voice_state.state==MUSE_MODULE_LLM_DISCOVERING)name="LOADING VOICE";
+        else if(voice_state.state==MUSE_MODULE_LLM_CANCELLING)name="STARTING MIC";
+        else if(voice_state.state!=MUSE_MODULE_LLM_READY)name="VOICE NOT READY";
+        else if(mode==MUSE_MODE_IDLE && !strcmp(name,"READY")){
+            muse_hatch_status_t connection;muse_hatch_status(&connection);
+            if(connection.state==MUSE_HATCH_NOT_SET)name="PAIR MUSE";
+            else if(connection.state==MUSE_HATCH_UNREACHABLE)name="MUSE OFFLINE";
+            else if(connection.state!=MUSE_HATCH_REACHABLE)name="CONNECTING MUSE";
+        }
+    }
 #endif
 
 #if CONFIG_MUSE_MODULE_LLM

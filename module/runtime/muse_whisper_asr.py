@@ -31,14 +31,17 @@ def dedupe(previous,text):
 
 class WhisperASR:
  def __init__(self,gain=lambda:100,capture_endpoint='ipc:///tmp/llm/pcm.cap.socket',startup_timeout=90):
-  self.gain=gain;self.endpoint=capture_endpoint;self.stop=threading.Event();self.ready=threading.Event();self.frame=threading.Event();self.lock=threading.RLock();self.jobs=queue.Queue(6);self.outputs=queue.Queue();self.epoch=0;self.finished=threading.Event();self.finished.set();self.failure=None;self.busy=False;self.proc=None;self.count=0;self.last_decode=0.;self.finish_at=None;self.preroll_blocked=False;self.segmenter=Segmenter(self._enqueue)
+  self.warm_seconds=0.;self.warmed=False;self.last_frame=0.;self.gain=gain;self.endpoint=capture_endpoint;self.stop=threading.Event();self.ready=threading.Event();self.frame=threading.Event();self.lock=threading.RLock();self.jobs=queue.Queue(6);self.outputs=queue.Queue();self.epoch=0;self.finished=threading.Event();self.finished.set();self.failure=None;self.busy=False;self.proc=None;self.count=0;self.last_decode=0.;self.finish_at=None;self.preroll_blocked=False;self.segmenter=Segmenter(self._enqueue)
   self.worker=threading.Thread(target=self._work,name='whisper-base-worker',daemon=True);self.worker.start()
   if not self.ready.wait(startup_timeout):self.close();raise RuntimeError('Whisper-base startup timed out')
   if self.failure:self.close();raise RuntimeError('Whisper-base could not start: '+self.failure)
   self.capture=threading.Thread(target=self._capture,name='whisper-pcm-capture',daemon=True);self.capture.start()
+  if not self.frame.wait(5):self.close();raise RuntimeError('Whisper microphone has no live PCM frames')
+ def healthy(self):
+  return self.warmed and not self.failure and not self.stop.is_set() and self.worker.is_alive() and self.proc is not None and self.proc.poll() is None and time.monotonic()-self.last_frame<2.
  def _status(self):
   try:
-   p=Path('/var/lib/muse-core2-bridge/whisper-asr-status.json');tmp=p.with_suffix('.new');tmp.write_text(json.dumps(dict(model=MODEL,ready=self.ready.is_set() and not self.failure and not self.stop.is_set(),busy=self.busy,error=self.failure,chunks=self.count,last_decode_seconds=round(self.last_decode,3))));os.chmod(tmp,0o600);os.replace(tmp,p)
+   p=Path('/var/lib/muse-core2-bridge/whisper-asr-status.json');tmp=p.with_suffix('.new');tmp.write_text(json.dumps(dict(model=MODEL,ready=self.ready.is_set() and not self.failure and not self.stop.is_set(),warmed=self.warmed,warm_seconds=round(self.warm_seconds,3),capture_age_seconds=round(time.monotonic()-self.last_frame,3) if self.last_frame else None,busy=self.busy,error=self.failure,chunks=self.count,last_decode_seconds=round(self.last_decode,3))));os.chmod(tmp,0o600);os.replace(tmp,p)
   except OSError:pass
  def _enqueue(self,pcm,overlap):
   try:self.jobs.put_nowait((self.epoch,pcm,overlap))
@@ -77,7 +80,7 @@ class WhisperASR:
      with self.lock:
       if self.preroll_blocked and not self.segmenter.active:self.segmenter.pre.clear()
       else:self.segmenter.feed(pcm,db if db is not None else -100.)
-     self.frame.set()
+     self.last_frame=time.monotonic();self.frame.set()
     with self.lock:
      if self.finish_at is not None and time.monotonic()>=self.finish_at:self.segmenter.finish();self._enqueue(None,False);self.finish_at=None
   except Exception as exc:self.failure='Whisper microphone capture failed: '+type(exc).__name__;self.finished.set();self._status()
@@ -125,6 +128,22 @@ class WhisperASR:
    while time.monotonic()<end:
     if pub.readable(100) and pub.recv()==b'\x01':break
    else:raise RuntimeError('Whisper private PCM subscription missing')
+   # Exercise the actual Whisper decoder with fixed synthetic speech, never
+   # ambient microphone audio. Discard the result; do not save a chat/recording.
+   from muse_piper import synthesize
+   warm_started=time.monotonic()
+   prime=synthesize('The blue lantern is on the table.',None,lambda _:None)
+   pub.send(prime+b'\0'*8000);deadline=time.monotonic()+60;verified=False
+   while time.monotonic()<deadline and not self.stop.is_set():
+    if self.proc.poll() is not None:raise RuntimeError('Whisper stopped during warm-up')
+    if not pull.readable(100):continue
+    candidate=json.loads(pull.recv())
+    if candidate.get('work_id')!=task or candidate.get('object')!='asr.utf-8':continue
+    if candidate.get('error',{}).get('code')!=0 or not isinstance(candidate.get('data'),str) or not candidate['data'].strip():raise RuntimeError('Whisper warm-up did not decode speech')
+    verified=True;break
+   if not verified:raise RuntimeError('Whisper decoder warm-up timed out')
+   self.warm_seconds=time.monotonic()-warm_started
+   self.warmed=True
    self.ready.set();self._status();previous='';previous_epoch=None
    while not self.stop.is_set():
     try:epoch,pcm,overlap=self.jobs.get(timeout=.1)

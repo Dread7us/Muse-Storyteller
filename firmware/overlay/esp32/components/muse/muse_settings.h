@@ -54,6 +54,10 @@ void muse_settings_set_listener(muse_setting_cb_t cb);
 
 bool muse_settings_startup_splash(void);
 void muse_settings_set_startup_splash(bool on);
+int muse_settings_voice_source(void); /* 0 local, 1 native Muse */
+void muse_settings_set_voice_source(int source);
+int muse_settings_muse_voice(void); /* verified list index */
+void muse_settings_set_muse_voice(int voice);
 int muse_settings_speech_speed(void); /* 0 slow, 1 normal, 2 fast */
 void muse_settings_set_speech_speed(int speed);
 int muse_settings_volume(void);         /* 0..100 */

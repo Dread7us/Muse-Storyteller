@@ -22,6 +22,13 @@ class Backend:
   self._legacy.initialize();self._legacy.mic.record(False);self._legacy.mic.pause_output(True)
   self._asr=WhisperASR(lambda:self._legacy.mic_level,self._capture_endpoint)
   self._legacy.mic=MicProxy(self._legacy.mic,self._asr)
+ def prepare_ready(self):
+  if self.startup_health():return
+  if self._asr:self._asr.close()
+  self._asr=WhisperASR(lambda:self._legacy.mic_level,self._capture_endpoint)
+  self._legacy.mic.asr=self._asr
+ def startup_health(self):
+  return self._asr is not None and self._asr.healthy()
  def start_asr(self):
   try:
    if self._asr.failure:

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "muse_module_llm.h"
 #include "muse_memory.h"
+#include "muse_native_voice.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "muse_module_llm_protocol.h"
 
 #include <stdio.h>
@@ -36,6 +39,16 @@ void muse_module_llm_set_mic_level(int pct)
 }
 static int64_t s_meter_at;
 static QueueHandle_t s_commands;
+static SemaphoreHandle_t s_tx_mutex;
+static char s_cloud_session[9];
+bool muse_module_llm_send_line(const char *json){
+    if(!s_tx_mutex || !json)return false;
+    xSemaphoreTake(s_tx_mutex,portMAX_DELAY);size_t n=strlen(json);
+    bool ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json,n)==(int)n && uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
+    xSemaphoreGive(s_tx_mutex);return ok;
+}
+void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
+
 static uint32_t s_play_generation, s_cancel_generation, s_record_epoch;
 static bool s_cancel_requested, s_cancel_valid;
 static muse_module_llm_playback_t s_playback;
@@ -51,6 +64,7 @@ typedef struct {
     uint32_t chat_generation, record_epoch;
     char *text;
     unsigned volume,speech_speed;
+    char external_key[25];
 } command_t;
 typedef enum { OP_NONE, OP_HELLO, OP_STATUS, OP_LISTEN_BEGIN, OP_LISTEN, OP_LISTEN_END, OP_SPEAK, OP_CANCEL } operation_t;
 typedef struct {
@@ -60,6 +74,7 @@ typedef struct {
     char request_id[48], session[9];
     int64_t deadline, retry_at, next_status_at, waiting_since, pause_since, control_at;
     unsigned speech_speed;
+    char external_key[25];
     bool accepted, speaking, end_requested, cancel_failed, stop_unconfirmed, no_speech;
 } runtime_t;
 
@@ -162,11 +177,10 @@ static bool send_command(runtime_t *r, const char *action, const char *text, uns
         cJSON *root=cJSON_Parse(json);cJSON_free(json);if(!root)return false;
         static const char *names[]={"slow","normal","fast"};
         cJSON_AddStringToObject(cJSON_GetObjectItemCaseSensitive(root,"data"),"speed",names[r->speech_speed<=2?r->speech_speed:1]);
+        if(r->external_key[0])cJSON_AddStringToObject(cJSON_GetObjectItemCaseSensitive(root,"data"),"external_key",r->external_key);
         json=cJSON_PrintUnformatted(root);cJSON_Delete(root);if(!json)return false;
     }
-    size_t length = strlen(json);
-    bool sent = uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, json, length) == (int)length &&
-        uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, "\n", 1) == 1;
+    bool sent = muse_module_llm_send_line(json);
     cJSON_free(json);
     return sent;
 }
@@ -199,6 +213,7 @@ static void on_frame(const char *frame, size_t length, void *context)
     runtime_t *r = context;
     muse_llm_reply_t reply;
     if (!muse_llm_reply_parse(frame, length, &reply)) return;
+    if (muse_native_voice_reply(reply.root,r->session)) { muse_llm_reply_free(&reply); return; }
     if (muse_memory_reply(reply.root, r->session)) { muse_llm_reply_free(&reply); return; }
     muse_llm_bridge_event_t event;
     if (!muse_llm_bridge_event(&reply, r->session, r->request_id, r->generation, &event)) {
@@ -404,7 +419,7 @@ static void handle(runtime_t *r, command_t *command)
         r->operation = OP_SPEAK;
         r->pause_since=0;r->control_at=0;
         r->chat_generation = command->chat_generation;
-        r->speech_speed=command->speech_speed;
+        r->speech_speed=command->speech_speed;strlcpy(r->external_key,command->external_key,sizeof(r->external_key));
         /* A failure ceiling, never a signal that the speaker finished. */
         r->deadline = esp_timer_get_time() + 12LL * 60 * 1000000;
         set_status(MUSE_MODULE_LLM_PREPARING, "PREPARING VOICE...");
@@ -430,7 +445,7 @@ if(r->operation==OP_SPEAK && r->accepted){
         if(d){char id[48];snprintf(id,sizeof(id),"ctl-%08lx-%08lx",(unsigned long)r->nonce,(unsigned long)++r->serial);
             cJSON_AddStringToObject(root,"request_id",id);cJSON_AddStringToObject(root,"work_id","musevoice");cJSON_AddStringToObject(root,"object","musevoice.v1");cJSON_AddStringToObject(root,"action","control");
             cJSON_AddStringToObject(d,"session",r->session);cJSON_AddNumberToObject(d,"generation",r->generation);cJSON_AddBoolToObject(d,"paused",paused);cJSON_AddNumberToObject(d,"volume",volume);
-            char *json=cJSON_PrintUnformatted(root);if(json){size_t n=strlen(json);bool ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json,n)==(int)n && uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;cJSON_free(json);
+            char *json=cJSON_PrintUnformatted(root);if(json){bool ok=muse_module_llm_send_line(json);cJSON_free(json);
                 if(ok){portENTER_CRITICAL(&s_lock);if(volume==s_live_volume && paused==s_status.pause_requested)s_control_dirty=false;portEXIT_CRITICAL(&s_lock);r->control_at=now;}}
         }cJSON_Delete(root);
     }
@@ -512,6 +527,7 @@ static void runtime_task(void *unused)
         while (xQueueReceive(s_commands, &command, 0) == pdTRUE) handle(&r, &command);
         unsigned char bytes[512];
         int n = uart_read_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
+        portENTER_CRITICAL(&s_lock);memcpy(s_cloud_session,r.session,9);portEXIT_CRITICAL(&s_lock);
         if (n > 0) muse_llm_framer_feed(&r.framer, bytes, (size_t)n, on_frame, &r);
         now = esp_timer_get_time();
         check_deadline(&r, now);
@@ -533,6 +549,7 @@ static esp_err_t post(command_t *command)
 
 esp_err_t muse_module_llm_start(void)
 {
+    if(!s_tx_mutex){static StaticSemaphore_t storage;s_tx_mutex=xSemaphoreCreateMutexStatic(&storage);}
     if (s_started) return ESP_OK;
     if (!muse_llm_model_name_valid(CONFIG_MUSE_MODULE_LLM_ASR_MODEL) ||
         !muse_llm_model_name_valid(CONFIG_MUSE_MODULE_LLM_TTS_MODEL)) {
@@ -577,7 +594,7 @@ esp_err_t muse_module_llm_listen_end(void)
     return post(&command);
 }
 
-esp_err_t muse_module_llm_speak(uint32_t generation, const char *text, unsigned volume)
+static esp_err_t speak_internal(uint32_t generation, const char *text, unsigned volume,const char *key)
 {
     if (!muse_llm_text_valid(text, MUSE_LLM_TEXT_MAX) || volume > 100) return ESP_ERR_INVALID_ARG;
     if(muse_memory_recorder_active())return ESP_ERR_TIMEOUT;
@@ -596,6 +613,7 @@ esp_err_t muse_module_llm_speak(uint32_t generation, const char *text, unsigned 
     if (busy) { free(copy); return ESP_ERR_TIMEOUT; }
     portENTER_CRITICAL(&s_lock);unsigned speech_speed=s_speech_speed;portEXIT_CRITICAL(&s_lock);
     command_t command = {.speech_speed=speech_speed,.kind = CMD_SPEAK, .chat_generation = generation, .text = copy, .volume = volume};
+    if(key)strlcpy(command.external_key,key,sizeof(command.external_key));
     esp_err_t result = post(&command);
     if (result != ESP_OK) { free(copy); set_playback(MUSE_MODULE_LLM_PLAYBACK_FAILED); }
     return result;
@@ -615,3 +633,6 @@ void muse_module_llm_cancel(uint32_t generation)
     }
     portEXIT_CRITICAL(&s_lock);
 }
+
+esp_err_t muse_module_llm_speak(uint32_t gen,const char *text,unsigned volume){return speak_internal(gen,text,volume,NULL);}
+esp_err_t muse_module_llm_speak_external(uint32_t gen,const char *text,unsigned volume,const char *key){if(!key||strlen(key)!=24)return ESP_ERR_INVALID_ARG;return speak_internal(gen,text,volume,key);}

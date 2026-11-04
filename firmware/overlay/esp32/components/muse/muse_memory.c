@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "muse_memory.h"
+#include "muse_module_llm.h"
 #include "muse_chat.h"
 #include "muse_mem.h"
 #include "muse_state.h"
@@ -198,8 +199,8 @@ void muse_memory_tick(const char *session,bool idle)
     }else if(!strcmp(s_job->op,"context"))cJSON_AddStringToObject(d,"query",s_job->text?s_job->text:"");
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);
     if(!json){finish(false,"Archive memory unavailable");return;}
-    size_t n=strlen(json);
-    bool sent=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json,n)==(int)n && uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
+
+    bool sent=muse_module_llm_send_line(json);
     cJSON_free(json);s_waiting=true;s_deadline=esp_timer_get_time()+(sent?8000000LL:100000LL);
 }
 bool muse_memory_reply(const cJSON *root,const char *session)

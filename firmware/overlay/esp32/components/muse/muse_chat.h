@@ -175,3 +175,27 @@ bool muse_chat_clear_bench(void);
 #ifdef __cplusplus
 }
 #endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool muse_chat_native_probe(void);
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool muse_chat_native_file(uint32_t offset);
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool muse_chat_native_fixture(void);
+#ifdef __cplusplus
+}
+#endif

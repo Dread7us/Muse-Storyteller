@@ -1,4 +1,4 @@
 #pragma once
 /* Increment for every shipped edition update: patch for fixes, minor for features.
  * This product version is separate from the upstream SDK/OTA version. */
-#define MUSE_STORYTELLER_VERSION "0.2.0"
+#define MUSE_STORYTELLER_VERSION "0.3.0"

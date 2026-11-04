@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.2.0**
+**Edition v0.3.0**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/Code-Apache--2.0-C4B5FD?style=flat-square)](LICENSE)
 [![Checks](https://github.com/Dread7us/Muse-Storyteller/actions/workflows/checks.yml/badge.svg)](https://github.com/Dread7us/Muse-Storyteller/actions/workflows/checks.yml)
 
-**Whisper Base listening · Piper narration · A reader that follows the voice**
+**Whisper Base listening · Piper or native Muse narration · Word-following**
 
 <img src="docs/assets/storyteller-hero.svg" width="1000" alt="Muse Storyteller interface illustration: a highlighted story, centered playback controls, and separate Core2 display and Module LLM speech hardware">
 
@@ -29,6 +29,9 @@ This community edition adds the speech, reader, recorder, and control experience
 </div>
 
 ---
+
+Native Muse narration is an optional online path using the existing Muse account allowance,
+with Piper kept for offline narration. See [native voice setup and limits](docs/NATIVE-VOICE-DEVELOPMENT.md).
 
 ## On the device
 
@@ -187,8 +190,11 @@ back/forward; the middle control remains hold-to-talk.
 ## Startup screen and version
 
 **Settings → Startup** lets you disable **Show splash**, preview the welcome screen,
-and see the edition version. The color-avatar splash lasts about two seconds, can be
-skipped with a tap, and uses a UI timer while initialization continues. The same edition
+and see the edition version. Initialization runs alongside the splash. It stays visible
+for at least two seconds and can show voice-loading progress for up to 30 seconds;
+tap to skip at any time. Skipping does not bypass readiness checks. Whisper Base decodes
+a fixed synthetic phrase and verifies live microphone frames before announcing Ready.
+If loading takes longer, the normal screen continues to show Loading Voice. The same edition
 version appears at the bottom of Settings. It is independent of the SDK’s OTA build tag.
 [Release history](CHANGELOG.md) · [Versioning rules](docs/MAINTAINING.md#edition-versions)
 

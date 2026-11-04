@@ -1160,10 +1160,38 @@ static void build_microphone_meter(lv_obj_t *list)
 
 }
 
+static lv_obj_t *s_native_voice_row;
+static void on_voice_source(lv_event_t *e){
+    int value=lv_dropdown_get_selected(lv_event_get_target(e));muse_settings_set_voice_source(value);
+    if(s_native_voice_row){if(value)lv_obj_remove_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);}
+}
+static void on_native_voice(lv_event_t *e){muse_settings_set_muse_voice(lv_dropdown_get_selected(lv_event_get_target(e)));}
+static void voice_options(lv_obj_t *list){
+    label(list,&lv_font_montserrat_16,COLOR_DIM,"Voice source");
+    lv_obj_t *source=lv_dropdown_create(list);lv_obj_set_width(source,lv_pct(100));
+    lv_dropdown_set_options(source,"Local / offline\nMuse / online");lv_dropdown_set_selected(source,muse_settings_voice_source());
+    lv_obj_add_event_cb(source,on_voice_source,LV_EVENT_VALUE_CHANGED,NULL);
+    s_native_voice_row=lv_dropdown_create(list);lv_obj_set_width(s_native_voice_row,lv_pct(100));
+    lv_dropdown_set_options(s_native_voice_row,"Helio - American\nAria - American");lv_dropdown_set_selected(s_native_voice_row,muse_settings_muse_voice());
+    lv_obj_add_event_cb(s_native_voice_row,on_native_voice,LV_EVENT_VALUE_CHANGED,NULL);
+    lv_obj_t *pickers[]={source,s_native_voice_row};
+    for(unsigned i=0;i<2;i++){
+        lv_obj_set_height(pickers[i],36);
+        lv_obj_set_style_text_font(pickers[i],&lv_font_montserrat_16,0);
+        lv_obj_set_style_text_color(pickers[i],lv_color_hex(COLOR_TEXT),0);
+        lv_obj_set_style_bg_color(pickers[i],lv_color_hex(COLOR_CARD),0);
+        lv_obj_set_style_border_color(pickers[i],lv_color_hex(COLOR_ACCENT),0);
+        lv_obj_set_style_border_width(pickers[i],1,0);
+        lv_obj_set_style_radius(pickers[i],8,0);
+    }
+    if(!muse_settings_voice_source())lv_obj_add_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);
+    note(list,"Next reply. Local fallback.\nOnline uses Muse allowance.");
+}
 static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_sound = page(tile, "SOUND", true, &list);
+    s_native_voice_row=NULL;
     if (HAS_MODULE_SPEAKER) build_microphone_meter(list);
     if (HAS_MODULE_SPEAKER) {
         s_gain_sl = slider(list, "Mic level", 0, 100, muse_settings_module_mic_level(), &s_gain_val, on_gain);
@@ -1181,6 +1209,7 @@ static void build_sound_page(lv_obj_t *tile)
             note(list,"Slow / Normal / Fast - next reply");
         }
         s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
+        if(HAS_MODULE_SPEAKER)voice_options(list);
     }
 
     if (!HAS_MODULE_SPEAKER) build_microphone_meter(list);

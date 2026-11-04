@@ -78,3 +78,39 @@ the complete built/flashed application checks above refer to the reference insta
 
 The CI checks source integrity, explicit-command boundaries, portable runtime behavior
 and publication hygiene. It does not record audio, run NPU models, or test a real board.
+
+## Edition 0.2.1 startup checks
+
+The firmware compiled and the application-only update passed digest and healthy-boot
+checks, with advancing UI heartbeats and the saved 30% volume retained. The installed
+Module passed actual Whisper synthetic-speech warm-up and readiness inspection.
+A guarded voice-service cold restart changed the real Core2 header to Loading Voice
+and back to Ready after recovery. Stale-capture and failed-health rejection tests passed.
+The owner confirmed the first press goes straight to Listening and captures the beginning.
+
+
+## Edition 0.3.0 native voice checks
+
+The reference application compiled, was written only to its application slot,
+and passed digest/healthy-boot checks, retaining pairing and 50% volume. The
+Module bridge recovered after guarded updates with exact source backups.
+
+A fixed native clip passed pause/resume, Settings, stop and cached restart, with
+advancing reader frames and word offsets through the complete script. Fresh
+native replies passed for Aria and Helio. The final Helio test had no bridge error,
+word offsets reached the end of its 201-byte script, and reader frames continued.
+The UI did not block on download or local forced alignment.
+
+A short isolated VM job measured first audio bytes at 948 ms and total synthesis
+at 3,051 ms. That excludes Muse's response generation and device buffering.
+The final fresh reference test began speaking at about 18.0 seconds from its
+recognized-text request, versus 24.7 seconds before prefetch. Its final text
+arrived at about 13.1 seconds. These are individual observations, not a service
+latency guarantee. Longer response generation can still increase the initial wait.
+
+Four isolated Linux helper tests passed. Real Module cache tests verified block
+ordering rejection, final hashes, MP3 decoding and original-text timing offsets.
+The portable suite passed with platform-specific tests skipped on Windows;
+the four helper tests were run separately on the Linux Module. The sanitized
+public profile retains its separate weather configuration; the hardware build
+above refers to the reference installation.

@@ -42,6 +42,7 @@
  */
 
 #include <atomic>
+#include <ctime>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
@@ -77,6 +78,7 @@ extern "C" {
 #include "muse_chat_priv.h"
 #if CONFIG_MUSE_MODULE_LLM
 #include "muse_conversation.h"
+#include "muse_native_voice.h"
 #include "muse_memory.h"
 #endif
 #if CONFIG_MUSE_MODULE_LLM
@@ -152,7 +154,7 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR };
+                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -195,9 +197,16 @@ static char s_host[MUSE_HOST_MAX + 1];
 static int64_t s_auto_next_us;
 static int64_t s_auto_backoff_us = AUTO_RETRY_MIN_US;
 
+/* Isolated native admission diagnostic. No microphone, greeting or audio upload. */
+extern "C" const char *identity_node_id(void);
+extern "C" const char *identity_sdk_token(void);
+static bool s_native_app, s_native_active, s_native_ready, s_native_close, s_native_finished, s_native_ack;
+static int64_t s_native_stream, s_native_end, s_native_at, s_native_deadline;
+static char s_native_id[40],s_native_thread[160],s_native_started[32];
+static void native_tick(void);
 /* ---- Streams on the connection ---- */
 
-enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS };
+enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_NATIVE, K_NATIVE_END, K_NATIVE_FILE };
 
 struct stream_t {
     int64_t id;
@@ -221,6 +230,7 @@ enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
 struct msg_t {
     char id[80];
+    char external_key[25];
     size_t len;              /* reply text length so far */
     char tail[128];          /* its last characters, for the caption */
     bool done;
@@ -241,6 +251,9 @@ struct turn_t {
     uint32_t gen;
     bool text;               /* typed at the console: the reply goes there, unspoken */
     bool end_requested, end_sent, chat_posted, acked;
+    char native_job[25];
+    bool native_started,native_claimed;
+    int native_voice,native_speed;
     int64_t dict_id, chat_id;
     int64_t start_us, end_sent_us, chat_us, last_event_us, last_content_us;
     int64_t playback_paused_us, playback_pause_check;
@@ -545,13 +558,14 @@ static int ws_upgrade(esp_tls_t *tls, const char *vm_id, const char *token)
 {
     char id[3 * 128 + 1];
     query_escape(vm_id, id, sizeof(id));
-    size_t cap = 512 + strlen(id) + strlen(token) + strlen(s_host);
+    const char *app=s_native_app?"&app_id=hatch-web":"";
+    size_t cap = 512 + strlen(id) + strlen(app) + strlen(token) + strlen(s_host);
     char *req = static_cast<char *>(malloc(cap));
     if (!req) {
         return 0;
     }
     int len = snprintf(req, cap,
-                       "GET " NOISE_PATH "?vm_id=%s HTTP/1.1\r\n"
+                       "GET " NOISE_PATH "?vm_id=%s%s HTTP/1.1\r\n"
                        "Host: %s\r\n"
                        "Authorization: Bearer %s\r\n"
                        "Upgrade: websocket\r\n"
@@ -559,7 +573,7 @@ static int ws_upgrade(esp_tls_t *tls, const char *vm_id, const char *token)
                        "Sec-WebSocket-Version: 13\r\n"
                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                        "\r\n",
-                       id, s_host, token);
+                       id, app, s_host, token);
     bool sent = write_all(tls, req, len);
     free(req);
     if (!sent) {
@@ -1025,6 +1039,8 @@ static bool turn_start(uint32_t gen, bool text, bool network=true)
     }
     uint8_t *chunk = s_turn.chunk, *mp3 = s_turn.mp3, *note = s_turn.note;
     char *texts = s_turn.texts;
+    muse_native_voice_cancel();
+    s_turn.native_job[0]=0;s_turn.native_started=s_turn.native_claimed=false;
     s_can_restart=false;s_restart_wait=false;s_bench_reply=false;s_local_only=false;s_replaying=false;
     s_turn = turn_t{};
     s_turn.chunk = chunk;
@@ -1218,8 +1234,16 @@ static void send_chat(const char *text, const char *modality)
     char *remembered = muse_memory_prompt(text);
     const char *base=remembered ? remembered : text;
     const char *preferences="My standing response preferences: Use U.S. customary measurements only: Fahrenheit, miles, feet/inches, pounds/ounces and U.S. gallons. Convert metric measurements before replying. Use clear U.S. dates and 12-hour AM/PM times. Keep SCP identifiers unchanged. This gadget renders Markdown emphasis, lists, quotes and code; links display an address rather than opening a browser. The current question may be an imperfect offline speech transcript. Use the recent conversation to resolve obvious phonetic mistakes or missing spaces, especially names and acronyms. For example, in an established SCP-story conversation, a garbled request for a new Foundation story likely means an SCP Foundation story. Do not invent missing details, alter identifier digits, or reinterpret a clear request. If two interpretations materially differ, ask one short clarifying question. Apply these preferences while answering my current question below.\n\n";
-    size_t pref_cap=strlen(preferences)+strlen(base)+1;char *preferred=(char *)malloc(pref_cap);
-    if(preferred)snprintf(preferred,pref_cap,"%s%s",preferences,base);
+    char native_prompt[1400]={};
+    if(!s_turn.text && !s_local_only && muse_settings_voice_source()==1){
+        for(unsigned i=0;i<3;i++)snprintf(s_turn.native_job+8*i,9,"%08lx",(unsigned long)esp_random());
+        s_turn.native_voice=muse_settings_muse_voice();s_turn.native_speed=muse_settings_speech_speed();
+        const char *voice=s_turn.native_voice==1?"avocado_v2:MAI_01":"avocado_v2:MAI_03";
+        const char *speeds[]={"slow","normal","fast"};
+        snprintf(native_prompt,sizeof(native_prompt),"\nDevice narration delivery: Answer the question below normally, without shortening stories or lists. Also write the exact complete answer (Markdown allowed, at most 8192 UTF-8 bytes) to ~/muse-storyteller/replies/%s/source.md, creating this fresh directory. Use ONLY the already installed built-in Muse helper: launch python3 ~/muse-storyteller/tools/muse_vm_tts_job.py %s --voice %s --speed %s as a detached background job with stdin /dev/null and stdout/stderr in that job directory. Do not wait for synthesis to finish. Do not change global voice/settings or install a provider. Then return the exact same answer as normal text, without paths, tool acknowledgements or delivery instructions. If the installed helper cannot be launched, return the normal answer anyway; the device keeps a local fallback. This paragraph is device delivery configuration, not part of the answer.\n",s_turn.native_job,s_turn.native_job,voice,speeds[s_turn.native_speed]);
+    }
+    size_t pref_cap=strlen(preferences)+strlen(native_prompt)+strlen(base)+1;char *preferred=(char *)malloc(pref_cap);
+    if(preferred)snprintf(preferred,pref_cap,"%s%s%s",preferences,native_prompt,base);
     cJSON_AddStringToObject(body, "message", preferred ? preferred : base);free(preferred);
     free(remembered);
 #else
@@ -1243,6 +1267,7 @@ static void send_chat(const char *text, const char *modality)
         turn_fail("CAN'T REACH MUSE");
         return;
     }
+    if(s_turn.native_job[0])s_turn.native_started=muse_native_voice_begin(s_turn.native_job,s_turn.gen,s_turn.native_voice,s_turn.native_speed);
     s_turn.body_sent = len;
     s_turn.chat_us = s_turn.last_event_us = now_us();
     s_turn.phase = P_WAIT_REPLY;
@@ -1452,7 +1477,7 @@ static void message_done(int i, const char *final_text)
 #if CONFIG_MUSE_MODULE_LLM
     const char *conversation_text = final_text && final_text[0] ? final_text :
         (s_turn.texts ? s_turn.texts + i * TEXT_MAX : nullptr);
-    if (conversation_text) m.conversation_id = s_bench_reply?muse_conversation_add_transient(false,conversation_text):muse_conversation_add(false, conversation_text);
+    if (conversation_text && !s_turn.native_job[0]) m.conversation_id = s_bench_reply?muse_conversation_add_transient(false,conversation_text):muse_conversation_add(false, conversation_text);
     if(m.len && m.len<TEXT_MAX && s_turn.texts)s_can_restart=true;
 #endif
     if (m.len && m.tts == TTS_NONE) {
@@ -1587,7 +1612,22 @@ static void start_tts(void)
                 turn_fail("REPLY TOO LONG FOR LOCAL VOICE");
                 return;
             }
-            esp_err_t result = muse_module_llm_speak(s_turn.gen, local_text, muse_settings_volume());
+            if(s_turn.native_job[0] && !m.external_key[0] && !s_replaying){
+                if(s_turn.native_claimed){m.tts=TTS_FINISHED;continue;}
+                if(!s_turn.native_started){
+                    s_turn.native_started=true;
+                    if(!muse_native_voice_begin(s_turn.native_job,s_turn.gen,s_turn.native_voice,s_turn.native_speed))s_turn.native_job[0]=0;
+                }
+                if(s_turn.native_job[0]){
+                    char key[25];int ready=muse_native_voice_copy(s_turn.gen,s_turn.texts+i*TEXT_MAX,TEXT_MAX,key);
+                    if(ready==0)return;
+                    if(ready==1){strlcpy(m.external_key,key,sizeof(m.external_key));m.len=strlen(local_text);s_turn.native_claimed=true;}
+                    else{s_turn.native_job[0]=0;ESP_LOGW(TAG,"Muse audio unavailable; using local fallback");}
+                }
+            }
+            if(!m.conversation_id)m.conversation_id=s_bench_reply?muse_conversation_add_transient(false,local_text):muse_conversation_add(false,local_text);
+            muse_conversation_bind_speech(m.conversation_id);
+            esp_err_t result = m.external_key[0] ? muse_module_llm_speak_external(s_turn.gen,local_text,muse_settings_volume(),m.external_key) : muse_module_llm_speak(s_turn.gen, local_text, muse_settings_volume());
             if (result == ESP_ERR_TIMEOUT) return;   /* bounded local backpressure */
             if (result != ESP_OK) {
                 turn_fail("LOCAL VOICE IS NOT READY");
@@ -1870,12 +1910,162 @@ static void feed_lines(stream_t *s, const uint8_t *data, size_t len, void (*fn)(
     }
 }
 
+static void native_event(cJSON *event){
+    const char *type=cJSON_GetStringValue(cJSON_GetObjectItem(event,"type"));if(!type)return;
+    if(!strcmp(type,"hatch.voice.session")){
+        const char *id=cJSON_GetStringValue(cJSON_GetObjectItem(event,"call_id"));
+        const char *session=cJSON_GetStringValue(cJSON_GetObjectItem(event,"session_id"));
+        if(id&&!strcmp(id,s_native_id)&&session&&*session){
+            const char *thread=cJSON_GetStringValue(cJSON_GetObjectItem(event,"thread_id"));
+            if(thread)strlcpy(s_native_thread,thread,sizeof(s_native_thread));
+            s_native_ready=true;s_native_close=true;
+            printf("@native {\"event\":\"admitted\",\"milliseconds\":%lld}\n",(long long)((now_us()-s_native_at)/1000));
+        }else{s_native_close=true;printf("@native {\"event\":\"invalid_session\"}\n");}
+    }else if(!strcmp(type,"error")){s_native_close=true;printf("@native {\"event\":\"admission_error\"}\n");}
+    fflush(stdout);
+}
+static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+void native_rfc3339(int64_t unix_ms, char out[25])
+{
+    if (unix_ms < 0) {
+        unix_ms = 0;
+    }
+    int64_t secs = unix_ms / 1000;
+    int ms = (int)(unix_ms % 1000);
+    int64_t z = secs / 86400 + 719468;
+    int64_t sod = secs % 86400;
+    int64_t era = z / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t y = (int64_t)yoe + era * 400;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    y += m <= 2;
+    snprintf(out, 25, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", (unsigned)((uint64_t)y % 10000), m % 100, d % 100,
+             (unsigned)(sod / 3600), (unsigned)(sod / 60 % 60), (unsigned)(sod % 60), (unsigned)ms);
+}
+
+static int digits(const char *p, int n)
+{
+    int v = 0;
+    for (int i = 0; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') {
+            return -1;
+        }
+        v = v * 10 + (p[i] - '0');
+    }
+    return v;
+}
+
+int64_t native_http_date(const char *s, size_t len)
+{
+    /* "Sun, 06 Nov 1994 08:49:37 GMT" */
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    if (len != 29 || s[3] != ',' || s[4] != ' ' || s[7] != ' ' || s[11] != ' ' || s[16] != ' ' || s[19] != ':' ||
+        s[22] != ':' || memcmp(s + 25, " GMT", 4) != 0) {
+        return -1;
+    }
+    int day = digits(s + 5, 2), year = digits(s + 12, 4);
+    int hh = digits(s + 17, 2), mm = digits(s + 20, 2), ss = digits(s + 23, 2);
+    int mon = -1;
+    for (int i = 0; i < 12; i++) {
+        if (!memcmp(s + 8, months + 3 * i, 3)) {
+            mon = i + 1;
+        }
+    }
+    if (day < 1 || day > 31 || year < 1970 || mon < 0 || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60) {
+        return -1;
+    }
+    int64_t days = days_from_civil(year, (unsigned)mon, (unsigned)day);
+    return ((days * 86400) + hh * 3600 + mm * 60 + ss) * 1000;
+}
+
+
+static int64_t s_native_wall_offset_ms;
+static void native_stamp(char *out,size_t cap){(void)cap;int64_t wall=s_native_wall_offset_ms?now_us()/1000+s_native_wall_offset_ms:(int64_t)time(nullptr)*1000;native_rfc3339(wall,out);}
+static void native_start(void){
+    if(s_turn.phase!=P_IDLE||s_native_active){printf("@native {\"event\":\"busy\"}\n");return;}
+    disconnect("native admission diagnostic");s_native_app=true;
+    if(!ensure_connected()){s_native_app=false;s_auto_next_us=0;printf("@native {\"event\":\"connection_failed\"}\n");return;}
+    snprintf(s_native_id,sizeof(s_native_id),"%08lx-%04lx-4%03lx-8%03lx-%08lx%04lx",(unsigned long)esp_random(),(unsigned long)(esp_random()&65535),(unsigned long)(esp_random()&4095),(unsigned long)(esp_random()&4095),(unsigned long)esp_random(),(unsigned long)(esp_random()&65535));
+    s_native_active=true;s_native_ready=s_native_close=s_native_finished=s_native_ack=false;s_native_thread[0]=0;s_native_end=0;s_native_at=now_us();s_native_deadline=s_native_at+20000000LL;native_stamp(s_native_started,sizeof(s_native_started));
+    cJSON *j=cJSON_CreateObject();cJSON_AddStringToObject(j,"type","hatch.voice.call.start");cJSON_AddStringToObject(j,"call_id",s_native_id);cJSON_AddStringToObject(j,"device","mcu-wearable");cJSON_AddStringToObject(j,"device_id",identity_node_id());cJSON_AddStringToObject(j,"call_media_type","audio");cJSON_AddBoolToObject(j,"proactive_greeting_enabled",false);
+    char *body=cJSON_PrintUnformatted(j);cJSON_Delete(j);char path[120];snprintf(path,sizeof(path),"/voice/realtime?call_id=%s",s_native_id);
+    char admission[700];snprintf(admission,sizeof(admission),"%s\n{\"type\":\"hatch.voice.capability.offer\",\"end_call_stop\":1}\n",body?body:"");cJSON_free(body);
+    s_native_stream=open_stream(K_NATIVE,"POST",path,"application/x-ndjson; charset=utf-8","application/x-ndjson",admission,false);
+    if(!s_native_stream)s_native_close=true;
+    printf("@native {\"event\":\"started\",\"sdk_token_configured\":%s}\n",identity_sdk_token()?"true":"false");fflush(stdout);
+}
+struct native_file_reply_t{char body[6144];size_t len;int status;bool overflow;std::atomic<bool>done{false};};
+static native_file_reply_t s_nf;static int64_t s_nf_id,s_nf_deadline;static bool s_nf_cancelled;static uint32_t s_nf_offset;
+static void native_file_cb(void *ctx,int status,const uint8_t *data,size_t len,bool end){
+    auto *r=static_cast<native_file_reply_t *>(ctx);if(status)r->status=status;
+    size_t room=sizeof(r->body)-1-r->len,take=len<room?len:room;
+    if(take){memcpy(r->body+r->len,data,take);}
+    r->len+=take;if(take<len)r->overflow=true;
+    if(end||status<0)r->done.store(true,std::memory_order_release);
+}
+static void native_file_start(uint32_t offset){
+    if(s_turn.phase!=P_IDLE||s_native_active||s_nf_id||offset>1024*1024){printf("@native_file {\"error\":\"busy_or_bound\"}\n");return;}
+    if(!muse_link_req_ready()){printf("@native_file {\"error\":\"link_not_ready\"}\n");return;}
+    s_nf.len=0;s_nf.status=0;s_nf.overflow=false;s_nf.done=false;s_nf_cancelled=false;
+    s_nf_offset=offset;char range[48];snprintf(range,sizeof(range),"bytes=%lu-%lu",(unsigned long)offset,(unsigned long)(offset+4095));
+    const char *headers[]={"Range",range,nullptr};
+    s_nf_id=muse_link_req_open("GET","/fs/raw/muse-storyteller-tests/blue-lantern-20261104.mp3",headers,true,native_file_cb,&s_nf);
+    s_nf_deadline=now_us()+15000000LL;
+    if(!s_nf_id){printf("@native_file {\"error\":\"link_open\"}\n");fflush(stdout);return;}
+
+}
+static void native_file_tick(void){
+    if(!s_nf_id)return;
+    if(s_nf.done.load(std::memory_order_acquire)){
+        cJSON *out=cJSON_CreateObject();bool ok=(s_nf.status==200||s_nf.status==206)&&!s_nf.overflow;
+        cJSON_AddNumberToObject(out,"status",s_nf.status);cJSON_AddBoolToObject(out,"ok",ok);cJSON_AddNumberToObject(out,"offset",s_nf_offset);
+        if(ok){char *encoded=(char *)malloc(4*((s_nf.len+2)/3)+1);if(encoded){size_t n=muse_hatch_base64((const uint8_t *)s_nf.body,s_nf.len,encoded);encoded[n]=0;cJSON_AddStringToObject(out,"audio",encoded);free(encoded);}}
+        else cJSON_AddStringToObject(out,"error",s_nf.overflow?"response_bound":"native_file_refused");
+        char *text=cJSON_PrintUnformatted(out);if(text){printf("@native_file %s\n",text);cJSON_free(text);}cJSON_Delete(out);s_nf_id=0;fflush(stdout);
+    }else if(now_us()>s_nf_deadline&&!s_nf_cancelled){s_nf_cancelled=true;muse_link_req_cancel(s_nf_id);}
+}
+static void native_tick(void){
+    native_file_tick();
+    if(!s_native_active)return;
+    if(now_us()>s_native_deadline){if(s_native_end)s_native_finished=true;else s_native_close=true;}
+    if(s_native_close&&!s_native_end&&!s_native_finished){
+        s_native_close=false;char ended[32];native_stamp(ended,sizeof(ended));
+        cJSON *j=cJSON_CreateObject();cJSON_AddStringToObject(j,"call_id",s_native_id);cJSON_AddStringToObject(j,"call_started_at",s_native_started);cJSON_AddStringToObject(j,"call_ended_at",ended);if(s_native_thread[0])cJSON_AddStringToObject(j,"thread_id",s_native_thread);
+        char *body=cJSON_PrintUnformatted(j);cJSON_Delete(j);s_native_end=open_stream(K_NATIVE_END,"POST","/voice/end-call","application/json","application/json",body,true);cJSON_free(body);
+        s_native_deadline=now_us()+12000000LL;if(!s_native_end)s_native_finished=true;
+    }
+    if(s_native_finished){
+        printf("@native {\"event\":\"complete\",\"admitted\":%s,\"end_acknowledged\":%s}\n",s_native_ready?"true":"false",s_native_ack?"true":"false");fflush(stdout);
+        if(s_native_stream){send_reset(s_native_stream);}
+        s_native_active=false;s_native_app=false;disconnect("native test finished");s_auto_next_us=0;s_auto_backoff_us=AUTO_RETRY_MIN_US;
+    }
+}
+
 static void stream_data(stream_t *s, ConstByteSpan data)
 {
     if (data.empty()) {
         return;
     }
     switch (s->kind) {
+    case K_NATIVE:
+        feed_lines(s,data.data(),data.size(),native_event);break;
+    case K_NATIVE_FILE:
+    case K_NATIVE_END: {
+        size_t take=data.size()<s->cap-1-s->len?data.size():s->cap-1-s->len;memcpy(s->line+s->len,data.data(),take);s->len+=take;break;
+    }
     case K_SUB:
         feed_lines(s, data.data(), data.size(), on_event);
         break;
@@ -1902,6 +2092,14 @@ static void stream_data(stream_t *s, ConstByteSpan data)
 static bool stream_end(stream_t *s, bool ok)
 {
     switch (s->kind) {
+    case K_NATIVE_FILE:{
+        s->line[s->len]=0;cJSON *j=cJSON_Parse(s->line),*out=cJSON_CreateObject();cJSON_AddNumberToObject(out,"status",s->status);cJSON_AddBoolToObject(out,"ok",ok);if(j)cJSON_AddItemToObject(out,"body",j);else cJSON_AddStringToObject(out,"error","invalid_json");char *text=cJSON_PrintUnformatted(out);if(text){printf("@native_file %s\n",text);cJSON_free(text);}cJSON_Delete(out);close_stream(s);fflush(stdout);return true;
+    }
+    case K_NATIVE:close_stream(s);s_native_stream=0;s_native_close=true;return true;
+    case K_NATIVE_END:{
+        s->line[s->len]=0;cJSON *j=cJSON_Parse(s->line);const cJSON *result=cJSON_GetObjectItem(j,"result");
+        s_native_ack=ok&&s->status>=200&&s->status<300&&cJSON_IsTrue(cJSON_GetObjectItem(j,"ok"))&&cJSON_IsTrue(cJSON_GetObjectItem(result,"ok"));cJSON_Delete(j);close_stream(s);s_native_finished=true;return true;
+    }
     case K_SUB:
         ESP_LOGW(TAG, "subscription ended");
         return false;
@@ -1947,6 +2145,17 @@ static bool on_frame(const DecodedServiceFrame &f)
     switch (f.kind) {
     case ServiceFrameKind::Response:
         s->status = f.response.status;
+        if(s->kind==K_NATIVE){
+            for(size_t k=0;k<f.response.headers.size();k++){
+                const HeaderView &h=f.response.headers[k];
+                if(h.key.size()==4&&!strncasecmp(h.key.data(),"date",4)){
+                    int64_t wall=native_http_date(h.value.data(),h.value.size());
+                    if(wall>0){s_native_wall_offset_ms=wall-now_us()/1000;native_rfc3339(wall-(now_us()-s_native_at)/1000,s_native_started);}
+                }
+            }
+        }
+        if(s->kind==K_NATIVE_FILE&&s->status>=400)return stream_end(s,false);
+        if(s->kind==K_NATIVE||s->kind==K_NATIVE_END){printf("@native {\"event\":\"http\",\"ending\":%s,\"status\":%d}\n",s->kind==K_NATIVE_END?"true":"false",s->status);fflush(stdout);if(s->status>=400)return stream_end(s,false);}
         if (f.response.status >= 400) {
             return on_http_error(s, f.response);
         }
@@ -2075,6 +2284,15 @@ static void restart_reply(void)
 static void handle(const cmd_t &cmd)
 {
     switch (cmd.type) {
+    case CMD_NATIVE_FIXTURE:
+        if(turn_start(++s_gen,false,false)){
+            s_bench_reply=true;s_local_only=true;s_turn.phase=P_WAIT_REPLY;s_turn.chat_posted=true;s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();s_turn.nmsgs=1;s_turn.msgs[0]=msg_t{};
+            strlcpy(s_turn.native_job,"44aabbccddeeff0011223302",sizeof(s_turn.native_job));s_turn.native_voice=0;s_turn.native_speed=1;
+            strlcpy(s_turn.msgs[0].id,"native-controls-test",sizeof(s_turn.msgs[0].id));
+            emit(MUSE_HATCH_EV_HEARD,"Native Muse playback test");message_done(0,"Preparing the verified Muse audio sample.");
+        }break;
+    case CMD_NATIVE_FILE:native_file_start(cmd.gen);break;
+    case CMD_NATIVE_PROBE:native_start();break;
     case CMD_CONNECT:
         if (s_turn.phase == P_IDLE) {
             disconnect("reconnect requested");
@@ -2168,6 +2386,7 @@ static void hatch_task(void *arg)
         if(s_turn.phase==P_WAIT_REPLY && (s_local_only || (s_replaying&&!s_connected))){
             start_tts();decode();check_turn();vTaskDelay(pdMS_TO_TICKS(2));continue;
         }
+        native_tick();
         if (!s_connected) {
             if (!muse_wifi_connected()) {
                 s_auto_next_us = 0;
@@ -2534,3 +2753,9 @@ extern "C" bool muse_chat_bench_playback(void){if(!s_cmds)return false;cmd_t c{C
 extern "C" bool muse_chat_clear_bench(void){if(!s_cmds)return false;cmd_t c{CMD_BENCH_CLEAR,0,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
 
 extern "C" bool muse_chat_playback_active(void){return s_playback_active.load();}
+
+extern "C" bool muse_chat_native_probe(void){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_PROBE,0,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
+
+extern "C" bool muse_chat_native_file(uint32_t offset){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FILE,offset,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
+
+extern "C" bool muse_chat_native_fixture(void){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FIXTURE,0,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}

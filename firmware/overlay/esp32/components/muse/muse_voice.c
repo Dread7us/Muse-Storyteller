@@ -95,6 +95,10 @@ static void local_voice_task(void *unused)
             if (input.type == MUSE_PTT_DOWN) {
                 if(muse_memory_recorder_active()){muse_ui_recorder_wake();continue;}
                 if(muse_memory_switching()){muse_state_set_caption("OPENING CONVERSATION...");continue;}
+                muse_module_llm_status_t gate;muse_module_llm_status(&gate);
+                if(gate.state==MUSE_MODULE_LLM_DISCOVERING || gate.state==MUSE_MODULE_LLM_UNAVAILABLE || gate.state==MUSE_MODULE_LLM_NEEDS_MODELS){
+                    held=false;local_status_caption();continue;
+                }
                 muse_hatch_turn_cancel();
                 reply = done = turn_active = false;
                 shown_frames = 0;

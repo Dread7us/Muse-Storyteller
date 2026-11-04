@@ -803,12 +803,15 @@ static bool console_command(char *line, bool whole)
         muse_weather_view_t w;muse_weather_copy(&w);
         printf("@weather {\"valid\":%s,\"busy\":%s,\"temperature_f\":%.1f,\"wind_mph\":%.1f,\"age_seconds\":%lu,\"time\":\"%s\",\"note\":\"%s\"}\n",w.valid?"true":"false",w.busy?"true":"false",w.temperature,w.wind,(unsigned long)w.age_seconds,w.time,w.note);fflush(stdout);return true;
     }
-#if CONFIG_LV_USE_SNAPSHOT
     if(!strcmp(line,"device.readerstate")){uint32_t version=0;unsigned count=0;size_t bytes=0;muse_conversation_diagnostic(&version,&count,&bytes);printf("@conversation_model {\"version\":%lu,\"count\":%u,\"bytes\":%u}\n",(unsigned long)version,count,(unsigned)bytes);fflush(stdout);return true;}
     if(!strcmp(line,"device.cleartest")){muse_chat_clear_bench();return true;}
+    if(!strcmp(line,"device.nativefixture")){printf("@native_fixture {\"queued\":%s}\n",muse_chat_native_fixture()?"true":"false");fflush(stdout);return true;}
+    if(!strncmp(line,"device.voice_source=",20)){int value=-1,voice=-1;if(sscanf(line+20,"%d,%d",&value,&voice)==2 && value>=0 && value<=1 && voice>=0 && voice<=1){muse_settings_set_voice_source(value);muse_settings_set_muse_voice(voice);}printf("@voice_source {\"source\":%d,\"voice\":%d,\"volume\":%d}\n",muse_settings_voice_source(),muse_settings_muse_voice(),muse_settings_volume());fflush(stdout);return true;}
+    if(!strncmp(line,"device.recognized=",18)){printf("@recognized_test {\"queued\":%s}\n",muse_chat_recognized_turn(line+18)?"true":"false");fflush(stdout);return true;}
     if(!strcmp(line,"device.playbacktest")){printf("@playback_test {\"queued\":%s}\n",muse_chat_bench_playback()?"true":"false");fflush(stdout);return true;}
     if(!strncmp(line,"device.command=",15)){printf("@device_command {\"queued\":%s}\n",muse_chat_device_command(line+15)?"true":"false");fflush(stdout);return true;}
-#endif
+    if(!strncmp(line,"device.nativefile=",18)){char *end=NULL;unsigned long n=strtoul(line+18,&end,10);if(end&&!*end&&n<=1024*1024)muse_chat_native_file((uint32_t)n);return true;}
+    if (!strcmp(line,"device.nativeprobe")){printf("@native {\"queued\":%s}\n",muse_chat_native_probe()?"true":"false");fflush(stdout);return true;}
     if (!strcmp(line, "voice.status")) {
         muse_module_llm_status_t state;
         muse_module_llm_status(&state);

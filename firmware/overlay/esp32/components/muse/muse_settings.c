@@ -38,6 +38,7 @@ static struct {
     uint8_t module_mic_level;
     bool speech_follow;
     uint8_t speech_speed;
+    uint8_t voice_source,muse_voice;
     uint8_t brightness;
     uint16_t sleep_s;
     bool recorder_sleep_enforced;
@@ -138,6 +139,8 @@ esp_err_t muse_settings_init(void)
         s.speaker_on = b;
     }
     load_u8("mic_gain", &s.mic_gain);
+    load_u8("voice_source", &s.voice_source);s.voice_source=clampi(s.voice_source,0,1);
+    load_u8("muse_voice", &s.muse_voice);s.muse_voice=clampi(s.muse_voice,0,1);
     load_u8("speech_speed", &s.speech_speed);s.speech_speed=clampi(s.speech_speed,0,2);
     load_u8("llm_mic_level", &s.module_mic_level);
     if (nvs_get_u8(s_nvs, "read_follow", &b) == ESP_OK) s.speech_follow = b != 0;
@@ -174,6 +177,10 @@ void muse_settings_set_listener(muse_setting_cb_t cb)
 
 bool muse_settings_startup_splash(void){return s.startup_splash;}
 void muse_settings_set_startup_splash(bool on){s.startup_splash=on;save_u8("boot_splash",on);}
+int muse_settings_voice_source(void){return s.voice_source;}
+void muse_settings_set_voice_source(int value){s.voice_source=clampi(value,0,1);save_u8("voice_source",s.voice_source);}
+int muse_settings_muse_voice(void){return s.muse_voice;}
+void muse_settings_set_muse_voice(int value){s.muse_voice=clampi(value,0,1);save_u8("muse_voice",s.muse_voice);}
 int muse_settings_speech_speed(void){return s.speech_speed;}
 void muse_settings_set_speech_speed(int speed){s.speech_speed=clampi(speed,0,2);save_u8("speech_speed",s.speech_speed);}
 int muse_settings_volume(void) { return s.volume; }

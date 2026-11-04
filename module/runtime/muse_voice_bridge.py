@@ -28,7 +28,7 @@ from muse_voice_backend import (ASR_MODEL, TTS_MODEL, Backend, BridgeError,
 PROTOCOL = 1
 SERVICE = "musevoice"
 CAPABILITIES = ["local_asr", "local_tts", "playback_join", "generation_cancel", "playback_control"]
-ACTIONS = {"inspect", "hello", "status", "listen_begin", "listen_end", "speak", "cancel", "memory", "control"}
+ACTIONS = {"inspect", "hello", "status", "listen_begin", "listen_end", "speak", "cancel", "memory", "control", "cloud"}
 REQUEST_LIMIT = 64 * 1024  # permits JSON escaping of the bounded 8192-byte text
 
 
@@ -57,7 +57,7 @@ def parse_request(action, envelope, allowed_route):
     generation, session = data.get("generation"), data.get("session")
     if type(generation) is not int or not 0 <= generation <= 0xffffffff:
         raise BridgeError(-2, "Invalid generation")
-    if action not in ("inspect", "hello", "status", "memory") and generation == 0:
+    if action not in ("inspect", "hello", "status", "memory", "cloud") and generation == 0:
         raise BridgeError(-2, "Operation generation must be nonzero")
     if not isinstance(session, str) or not re.fullmatch(r"[0-9a-f]{8}", session):
         raise BridgeError(-2, "Invalid boot session")
@@ -114,6 +114,7 @@ class Engine:
         self.wake, self.stop = threading.Event(), threading.Event()
         self.pending, self.current = None, None
         self.ready, self.failure = False, None
+        self.native_store = None
         self.session, self.retired_sessions, self.used_generations = None, set(), set()
         self.finished_generations = set()
         self.thread = threading.Thread(target=self.run, name="muse-native-worker", daemon=True)
@@ -126,6 +127,9 @@ class Engine:
         self.send(req, "error", code=error.code, message=error.message)
 
     def ready_event(self, req, busy=False):
+        health=getattr(getattr(self,'backend',None),'startup_health',None)
+        if health and not health():
+            self.fail(req,BridgeError(-23,'Voice decoder or microphone is not ready'));return
         current=self.current
         speech=current if current and current.req["action"]=="speak" else None
         self.send(req, "ready", ready=True, busy=busy, asr_model=ASR_MODEL,
@@ -237,7 +241,10 @@ class Engine:
         backend = None
         try:
             backend = self.backend_factory()
+            startup_at=time.monotonic()
             backend.initialize()
+            self.backend=backend
+            print(json.dumps(dict(phase='startup_ready',seconds=round(time.monotonic()-startup_at,3),recognizer=getattr(backend,'recognizer_name',ASR_MODEL))),flush=True)
             self.recognizer_name=getattr(backend,"recognizer_name",ASR_MODEL)
             self.meter = backend.mic
             with self.lock:
@@ -258,6 +265,8 @@ class Engine:
                     if operation.cancel.is_set():
                         raise Cancelled()
                     if req["action"] == "hello":
+                        prepare=getattr(backend,'prepare_ready',None)
+                        if prepare:prepare()
                         backend.pause_asr()
                         backend.stop_audio()
                         backend.assert_exclusive()
@@ -280,8 +289,16 @@ class Engine:
                         backend.playback_volume_callback=lambda volume:setattr(operation,"applied_volume",volume)
                         backend.speech_speed = req["data"].get("speed","normal")
                         backend.word_callback = lambda start, end: self.send(req, "word", start=start, end=end)
-                        backend.speak(req["data"]["text"], req["data"].get("volume", 70), operation.cancel,
-                                      lambda: self.send(req, "speaking"))
+                        if req['data'].get('external_key'):
+                            from muse_native_audio import NativeAudioError
+                            try:
+                                self.native_store.play(backend,req['data']['external_key'],req['data']['text'],req['data'].get('volume',70),operation.cancel,lambda:self.send(req,'speaking'))
+                            except Cancelled:raise
+                            except Exception as exc:
+                                raise BridgeError(-35,str(exc) if isinstance(exc,NativeAudioError) else 'Muse audio playback failed') from exc
+                        else:
+                            backend.speak(req["data"]["text"], req["data"].get("volume", 70), operation.cancel,
+                                          lambda: self.send(req, "speaking"))
                         if operation.cancel.is_set():
                             raise Cancelled()
                         cleanup_ok = True
@@ -311,7 +328,7 @@ class Engine:
                     if not operation.cancel_reqs:
                         self.send(req, "cancelled", joined=True)
                 except BridgeError as exc:
-                    if exc.code == -12: backend.pause_asr()
+                    if exc.code in (-12,-35): backend.pause_asr()
                     else: backend.stop_asr()
                     backend.stop_audio()
                     cleanup_ok = True
@@ -467,6 +484,8 @@ def serve(state_dir):
     engine = Engine(emit, lambda: default_backend(state_dir=state_dir))
     from muse_memory_worker import MemoryWorker
     memory = MemoryWorker(emit, response, engine=engine)
+    from muse_cloud_worker import CloudWorker
+    cloud = CloudWorker(emit,response,engine)
     stop = threading.Event()
     def terminate(*_):
         stop.set()
@@ -487,7 +506,9 @@ def serve(state_dir):
                 else:
                     # The stock router must be released before any inference.
                     server.send(b"None")
-                    if req["action"] == "memory":
+                    if req["action"] == "cloud":
+                        cloud.submit(req)
+                    elif req["action"] == "memory":
                         with engine.lock:
                             authorized = engine.ready and (req["session"] == engine.session or (req["route"].startswith("ipc:///tmp/musevoice/client-") and req["data"].get("op") == "diagnostic"))
                         if authorized: memory.submit(req)
@@ -510,6 +531,7 @@ def serve(state_dir):
             # A recoverable operation error leaves the native worker healthy.
             engine.raise_if_failed()
     finally:
+        cloud.close()
         memory.close()
         engine.shutdown()
         server.close()
@@ -572,7 +594,7 @@ def selftest(state_dir, microphone):
     try:
         backend.initialize()
         cancel = threading.Event()
-        result = backend.speak("Hello. Muse local voice is ready.", 70, cancel)
+        result = backend.speak("Hello care rick. Muse local voice is ready.", 70, cancel)
         output = {"ok": True, "phase": "selftest", "protocol": PROTOCOL,
                   "models_loaded": True, "pcm_generated": result["pcm_bytes"] > 0,
                   "playback_joined": result["joined"], "microphone_final": False,

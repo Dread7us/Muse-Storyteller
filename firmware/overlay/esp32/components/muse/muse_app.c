@@ -84,8 +84,10 @@ void muse_app_run(const muse_board_t *board)
     QueueHandle_t q = xQueueCreate(16, sizeof(muse_input_event_t));
     ESP_ERROR_CHECK(muse_input_start(q));
 
-    /* Let the boot animation (flame ignites, eyes open) play out. */
+    /* Start Module discovery while the splash/UI animation is already running. */
+#if !CONFIG_MUSE_MODULE_LLM
     vTaskDelay(pdMS_TO_TICKS(1400));
+#endif
     bool has_audio = board->audio_init || board->mic_init;
 #if CONFIG_MUSE_MODULE_LLM
     has_audio = true;   /* the UART module owns the microphone and speaker */
@@ -97,8 +99,11 @@ void muse_app_run(const muse_board_t *board)
     } else if (muse_voice_start(q) != ESP_OK) {
         ESP_LOGE(TAG, "voice pipeline unavailable");
     } else {
+#if !CONFIG_MUSE_MODULE_LLM
         muse_state_set_mode(MUSE_MODE_IDLE);
-        muse_state_set_caption("%s", "");   /* the button icons say how to talk */
+        muse_state_set_caption("%s", "");
+#endif
+        /* The Module task owns its readiness caption; never overwrite it. */
     }
 
     muse_hatch_start();
