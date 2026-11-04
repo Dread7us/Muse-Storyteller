@@ -33,25 +33,26 @@ static bool stopped(){return cancelled.load();}
 
 struct FileReply {uint8_t data[4096];size_t length;int status;bool overflow,done;};
 EXT_RAM_BSS_ATTR static FileReply file_reply;
-static bool file_poisoned;
-static void file_cb(void *,int status,const uint8_t *data,size_t length,bool end){
+static uint32_t file_generation;
+static void file_cb(void *context,int status,const uint8_t *data,size_t length,bool end){
     portENTER_CRITICAL(&lock);
+    if((uint32_t)(uintptr_t)context!=file_generation){portEXIT_CRITICAL(&lock);return;}
     if(status)file_reply.status=status;
     if(length && data){
         if(length>sizeof(file_reply.data)-file_reply.length)file_reply.overflow=true;
         else{memcpy(file_reply.data+file_reply.length,data,length);file_reply.length+=length;}
     }
-    if(end)file_reply.done=true;
+    if(end||status<0)file_reply.done=true;
     portEXIT_CRITICAL(&lock);
 }
-static int read_file(const char *name,size_t offset,uint8_t *out,size_t cap,size_t &length){
-    length=0;if(file_poisoned||stopped()||!muse_link_req_ready())return -1;
+static int read_file_once(const char *name,size_t offset,uint8_t *out,size_t cap,size_t &length){
+    length=0;if(stopped()||!muse_link_req_ready())return -1;
     char path[180],range[64];
     snprintf(path,sizeof(path),"/fs/raw/muse-storyteller/replies/%s/%s",job,name);
-    snprintf(range,sizeof(range),"bytes=%u-%u",(unsigned)offset,(unsigned)(offset+4095));
+    snprintf(range,sizeof(range),"bytes=%u-%u",(unsigned)offset,(unsigned)(offset+cap-1));
     const char *headers[]={"Range",range,nullptr};
-    portENTER_CRITICAL(&lock);file_reply={};portEXIT_CRITICAL(&lock);
-    int64_t id=muse_link_req_open("GET",path,headers,true,file_cb,nullptr);
+    portENTER_CRITICAL(&lock);file_reply={};uint32_t token=++file_generation;portEXIT_CRITICAL(&lock);
+    int64_t id=muse_link_req_open("GET",path,headers,true,file_cb,(void *)(uintptr_t)token);
     if(!id)return -1;
     int64_t until=now()+10000000;
     bool done=false;
@@ -64,7 +65,7 @@ static int read_file(const char *name,size_t offset,uint8_t *out,size_t cap,size
         muse_link_req_cancel(id);until=now()+2000000;
         while(now()<until){portENTER_CRITICAL(&lock);done=file_reply.done;portEXIT_CRITICAL(&lock);if(done){break;}
         pause_ms(5);}
-        if(!done)file_poisoned=true; // Never reuse storage under a late callback.
+        // The next request has a new token; late callbacks cannot touch it.
         return -1;
     }
     portENTER_CRITICAL(&lock);
@@ -72,6 +73,16 @@ static int read_file(const char *name,size_t offset,uint8_t *out,size_t cap,size
     if(file_reply.overflow||file_reply.length>cap)status=-1;
     else{length=file_reply.length;if(length)memcpy(out,file_reply.data,length);}
     portEXIT_CRITICAL(&lock);
+    return status;
+}
+static int read_file(const char *name,size_t offset,uint8_t *out,size_t cap,size_t &length){
+    int status=-1;
+    for(unsigned attempt=0;attempt<4&&!stopped();attempt++){
+        status=read_file_once(name,offset,out,cap,length);
+        if(status>0&&status<500&&status!=408&&status!=429)return status;
+        printf("@native_transfer {\"retry\":%u,\"offset\":%u,\"status\":%d}\n",attempt+1,(unsigned)offset,status);fflush(stdout);
+        pause_ms(250*(attempt+1));
+    }
     return status;
 }
 
@@ -93,7 +104,7 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
     }
     portEXIT_CRITICAL(&lock);return true;
 }
-static bool rpc(cJSON *data,bool cleanup=false){
+static bool rpc_once(cJSON *data,bool cleanup){
     char owner[9];muse_module_llm_session(owner);
     if(!owner[0]||(!cleanup&&stopped())){cJSON_Delete(data);return false;}
     cJSON *root=cJSON_CreateObject();if(!root||!data){cJSON_Delete(root);cJSON_Delete(data);return false;}
@@ -114,6 +125,15 @@ static bool rpc(cJSON *data,bool cleanup=false){
     portENTER_CRITICAL(&lock);rpc_waiting=false;portEXIT_CRITICAL(&lock);
     return done&&ok;
 }
+static bool rpc(cJSON *data,bool cleanup=false){
+    bool ok=false;
+    for(unsigned attempt=0;attempt<(cleanup?1U:3U)&&(!stopped()||cleanup);attempt++){
+        cJSON *copy=cJSON_Duplicate(data,true);if(!copy)break;
+        if(rpc_once(copy,cleanup)){ok=true;break;}
+        if(!cleanup)pause_ms(200*(attempt+1));
+    }
+    cJSON_Delete(data);return ok;
+}
 static cJSON *operation(const char *op){cJSON *d=cJSON_CreateObject();if(d){cJSON_AddStringToObject(d,"op",op);cJSON_AddStringToObject(d,"key",job);}return d;}
 static bool hex_digest(const uint8_t *data,size_t length,char out[65]){
     uint8_t digest[32];size_t written=0;if(psa_hash_compute(PSA_ALG_SHA_256,data,length,digest,sizeof(digest),&written)!=PSA_SUCCESS||written!=32)return false;
@@ -122,7 +142,7 @@ static bool hex_digest(const uint8_t *data,size_t length,char out[65]){
 }
 static void worker(void *){
     bool ready=false,complete=false;
-    uint8_t block[4097];size_t count=0,offset=0;
+    uint8_t block[4097];size_t count=0,offset=0;unsigned stage=0;
     char expected_source[65]={},expected_audio[65]={};
     size_t source_bytes=0,audio_bytes=0;
     int64_t until=now()+90000000;
@@ -130,7 +150,7 @@ static void worker(void *){
     while(now()<until&&!stopped()){
         int status=read_file("meta.json",0,block,4096,count);
         if(status==404){pause_ms(250);continue;}
-        if(status!=200&&status!=206)break;
+        if(status!=200&&status!=206){printf("@native_transfer {\"stage\":\"metadata\",\"status\":%d}\n",status);fflush(stdout);break;}
         block[count]=0;cJSON *m=cJSON_Parse((char *)block);
         const char *phase=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"state"));
         const char *hash=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"source_sha256"));
@@ -147,7 +167,7 @@ static void worker(void *){
         if(ready||error){break;}
         pause_ms(150);
     }
-    if(ready){
+    if(ready){stage=1;
         size_t at=0;while(at<source_bytes&&!stopped()){
             int status=read_file("source.md",at,block,4096,count);
             if((status!=200&&status!=206)||!count||count>source_bytes-at){ready=false;break;}
@@ -157,21 +177,23 @@ static void worker(void *){
         ready=ready&&at==source_bytes&&!memchr(script,0,at)&&hex_digest((uint8_t *)script,at,actual)&&!strcmp(actual,expected_source);
     }
     psa_hash_operation_t digest=PSA_HASH_OPERATION_INIT;if(psa_hash_setup(&digest,PSA_ALG_SHA_256)!=PSA_SUCCESS)ready=false;
-    if(ready&&!stopped()){
+    if(ready&&!stopped()){stage=2;
         cJSON *d=operation("begin");cJSON_AddStringToObject(d,"text",script);ready=rpc(d);
     }
-    until=now()+180000000;
+    until=now()+1200000000;
     char encoded[5500];
-    while(ready&&!stopped()&&now()<until){
+    while(ready&&!stopped()&&now()<until){stage=3;
         int status=read_file("audio.mp3",offset,block,4096,count);
         if(status==200||status==206){
             if(!count||offset+count>32*1024*1024){ready=false;break;}
-            size_t written=0;if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block,count)){ready=false;break;}encoded[written]=0;
-            cJSON *d=operation("chunk");cJSON_AddNumberToObject(d,"offset",offset);cJSON_AddStringToObject(d,"audio",encoded);
-            if(!rpc(d)){ready=false;break;}
+            size_t sent=0;while(sent<count){size_t portion=count-sent>4096?4096:count-sent;
+            size_t written=0;if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block+sent,portion)){ready=false;break;}encoded[written]=0;
+            cJSON *d=operation("chunk");cJSON_AddNumberToObject(d,"offset",offset+sent);cJSON_AddStringToObject(d,"audio",encoded);
+            if(!rpc(d)){ready=false;break;}sent+=portion;
+            }if(!ready)break;
             if(psa_hash_update(&digest,block,count)!=PSA_SUCCESS){ready=false;break;}offset+=count;
             // Cache exists before speaking is queued; decoder can grow in parallel.
-            state.store(1);continue;
+            continue;
         }
         if(status!=404&&status!=416){ready=false;break;}
         int ms=read_file("meta.json",0,block,4096,count);
@@ -184,13 +206,13 @@ static void worker(void *){
         bool error=phase&&!strcmp(phase,"error");cJSON_Delete(m);
         if(complete||error){if(error)ready=false;break;}pause_ms(100);
     }
-    if(ready&&complete&&!stopped()){
+    if(ready&&complete&&!stopped()){stage=4;
         uint8_t binary[32]={};char actual[65];size_t written=0;if(psa_hash_finish(&digest,binary,sizeof(binary),&written)!=PSA_SUCCESS||written!=32)ready=false;for(int i=0;i<32;i++)snprintf(actual+2*i,3,"%02x",binary[i]);
         if(!ready||strcmp(actual,expected_audio))ready=false;
-        else{cJSON *d=operation("end");cJSON_AddNumberToObject(d,"bytes",audio_bytes);cJSON_AddStringToObject(d,"sha256",actual);ready=rpc(d);}
+        else{cJSON *d=operation("end");cJSON_AddNumberToObject(d,"bytes",audio_bytes);cJSON_AddStringToObject(d,"sha256",actual);ready=rpc(d);if(ready)state.store(1);}
     }else ready=false;
     psa_hash_abort(&digest);
-    if(!ready){rpc(operation("abort"),true);if(!stopped())state.store(-1);}
+    if(!ready){printf("@native_transfer {\"failed_stage\":%u,\"received_bytes\":%u,\"cancelled\":%s}\n",stage,(unsigned)offset,stopped()?"true":"false");fflush(stdout);rpc(operation("abort"),true);if(!stopped())state.store(-1);}
     running.store(false);vTaskDeleteWithCaps(nullptr);
 }
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
@@ -204,3 +226,5 @@ int muse_native_voice_copy(uint32_t gen,char *text,size_t capacity,char key[25])
     int value=state.load();if(value==1){if(strlen(script)>=capacity)return -1;strlcpy(text,script,capacity);strlcpy(key,job,25);}return value;
 }
 void muse_native_voice_cancel(){cancelled.store(true);}
+
+bool muse_native_voice_rebind(uint32_t previous,uint32_t current){if(generation!=previous||cancelled.load())return false;generation=current;return true;}

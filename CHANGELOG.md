@@ -1,5 +1,18 @@
 # Release history
 
+## 0.3.1
+
+- Fully download, hash-check and decode native Muse audio before speaking.
+- Play ordinary replies in one continuous native call, with all timing prepared first.
+- Match the volume scaler's 5 MiB ceiling to the native playback block budget.
+- Keep valid audio playing if alignment fails; retain complete-text timing as fallback.
+- Persist completed-cache identity and timing so Restart survives Module service restarts.
+- Reuse an in-flight download when Stop is followed by Restart during buffering.
+- Preserve all PCM through bounded playback blocks for exceptionally long replies.
+- Reject early hardware completion instead of treating a shortened clip as successful.
+- Handle terminal native-file errors without leaving a request falsely pending.
+- Retry interrupted file ranges and lost transfer acknowledgements without duplicating audio.
+
 ## 0.3.0
 
 - Corrected published overlay checksums to use canonical LF source bytes on all platforms.

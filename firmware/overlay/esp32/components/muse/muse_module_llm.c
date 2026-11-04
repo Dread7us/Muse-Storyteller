@@ -39,6 +39,7 @@ void muse_module_llm_set_mic_level(int pct)
 }
 static int64_t s_meter_at;
 static QueueHandle_t s_commands;
+static unsigned s_diag_op,s_diag_rx;static int64_t s_diag_at;
 static SemaphoreHandle_t s_tx_mutex;
 static char s_cloud_session[9];
 bool muse_module_llm_send_line(const char *json){
@@ -487,6 +488,7 @@ static void runtime_task(void *unused)
     muse_llm_framer_init(&r.framer, frame, MUSE_LLM_FRAME_MAX + 1);
     for (;;) {
         int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_lock);s_diag_op=r.operation;s_diag_at=now;portEXIT_CRITICAL(&s_lock);
         portENTER_CRITICAL(&s_lock); bool ready = s_ready; portEXIT_CRITICAL(&s_lock);
         portENTER_CRITICAL(&s_lock);
         bool monitor = s_monitor, monitor_changed = s_monitor_changed;
@@ -528,6 +530,7 @@ static void runtime_task(void *unused)
         unsigned char bytes[512];
         int n = uart_read_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
         portENTER_CRITICAL(&s_lock);memcpy(s_cloud_session,r.session,9);portEXIT_CRITICAL(&s_lock);
+        if(n>0){portENTER_CRITICAL(&s_lock);s_diag_rx+=n;portEXIT_CRITICAL(&s_lock);}
         if (n > 0) muse_llm_framer_feed(&r.framer, bytes, (size_t)n, on_frame, &r);
         now = esp_timer_get_time();
         check_deadline(&r, now);
@@ -636,3 +639,5 @@ void muse_module_llm_cancel(uint32_t generation)
 
 esp_err_t muse_module_llm_speak(uint32_t gen,const char *text,unsigned volume){return speak_internal(gen,text,volume,NULL);}
 esp_err_t muse_module_llm_speak_external(uint32_t gen,const char *text,unsigned volume,const char *key){if(!key||strlen(key)!=24)return ESP_ERR_INVALID_ARG;return speak_internal(gen,text,volume,key);}
+
+void muse_module_llm_diagnostic(unsigned *baud,unsigned *op,unsigned *age,unsigned *rx){uint32_t rate=0;uart_get_baudrate(CONFIG_MUSE_MODULE_LLM_UART_NUM,&rate);*baud=rate;portENTER_CRITICAL(&s_lock);*op=s_diag_op;*age=(unsigned)((esp_timer_get_time()-s_diag_at)/1000);*rx=s_diag_rx;portEXIT_CRITICAL(&s_lock);}

@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.0 adds an optional native Muse audio path. It was built and tested on
+Edition 0.3.1 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -23,10 +23,12 @@ voice-options interface. No account restrictions are bypassed.
 ## How it works
 
 Muse writes the exact response script and launches `tools/muse_vm_tts_job.py`
-using its existing built-in speech facility. Core2 prefetches the growing MP3
-through its existing authenticated native file connection while Muse prepares
-the reply. It transfers bounded blocks to the Module, which decodes and aligns
-them against the exact script. Word offsets refer to the original UTF-8 text.
+using its existing built-in speech facility. Core2 downloads the complete MP3 through its existing authenticated native file
+connection while Muse prepares the reply. The Module verifies the complete
+transfer, decodes it, and prepares word timing before speaking. Ordinary replies
+use one continuous playback call; unusually long replies use bounded blocks
+from the already complete local cache. Alignment errors cannot discard valid
+audio. Word offsets refer to the original UTF-8 text.
 The UI, volume and playback-control path remain separate from network/analysis work.
 
 No PC, browser extension or phone is required for this voice path after setup.
@@ -47,8 +49,9 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
   for the Module. The reference asset root is `/opt/muse-cloud-voice-v41/`, with
   `vendor/`, `tiny-model/`, `feature_extractor.py`, `native_tokenizer.py`, and
   `decode_mp3`. These model/native dependencies are not embedded in this repo.
-- Deploy `muse_native_audio.py` and `muse_cloud_worker.py` with the matching
-  `muse_voice_bridge.py`. Stop/save Recorder and finish playback first, retain
+- Deploy `muse_native_audio.py`, `muse_cloud_worker.py`, `muse_voice_backend.py`
+  and `muse_playback_control.py` with the matching `muse_voice_bridge.py`.
+  Stop/save Recorder and finish playback first, retain
   exact backups, and validate both local startup and native playback afterward.
 
 ## Bounds and validation
@@ -72,3 +75,24 @@ Hardware tests cover native playback, live volume, pause/resume, Settings, stop,
 replay, healthy reboot and advancing UI frames. Full-response generation and
 buffering still add latency; the helper's first-byte time is not end-to-end reply
 latency. See VALIDATION.md for measured reference results.
+
+
+## Buffering and preparation time
+
+Full buffering trades some initial preparation time for steady narration. A
+complete cached reply restarts without downloading or generating speech again.
+Audio is read from the Module's local cache; large replies need not stay entirely
+in Python RAM. The native IPC playback budget is 5 MiB per call, below the
+adapter's 6 MiB message bound. Longer replies keep all samples across blocks.
+
+The reference device retains the factory 115200-baud Core2-to-Module link.
+That link, including base64 framing and acknowledgements, can take minutes to
+transfer a multi-minute MP3 even when the internet download itself is fast.
+The UI shows buffering during preparation. Restarting a complete cached reply
+avoids that transfer. Full buffering improves continuity after speech starts;
+it is not a promise of immediate first playback.
+
+Higher serial rates were investigated but failed reconnect validation and were
+rolled back, including the Module configuration. They are not enabled by this
+release. A network, timing or transfer failure cannot turn a partial download
+into a successfully completed reply.

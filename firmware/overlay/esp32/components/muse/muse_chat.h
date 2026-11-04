@@ -196,6 +196,7 @@ bool muse_chat_native_file(uint32_t offset);
 extern "C" {
 #endif
 bool muse_chat_native_fixture(void);
+bool muse_chat_native_fixture_key(const char *key);
 #ifdef __cplusplus
 }
 #endif

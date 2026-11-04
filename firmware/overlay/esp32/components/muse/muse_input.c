@@ -805,6 +805,7 @@ static bool console_command(char *line, bool whole)
     }
     if(!strcmp(line,"device.readerstate")){uint32_t version=0;unsigned count=0;size_t bytes=0;muse_conversation_diagnostic(&version,&count,&bytes);printf("@conversation_model {\"version\":%lu,\"count\":%u,\"bytes\":%u}\n",(unsigned long)version,count,(unsigned)bytes);fflush(stdout);return true;}
     if(!strcmp(line,"device.cleartest")){muse_chat_clear_bench();return true;}
+    if(!strncmp(line,"device.nativefixture=",21)){muse_chat_native_fixture_key(line+21);return true;}
     if(!strcmp(line,"device.nativefixture")){printf("@native_fixture {\"queued\":%s}\n",muse_chat_native_fixture()?"true":"false");fflush(stdout);return true;}
     if(!strncmp(line,"device.voice_source=",20)){int value=-1,voice=-1;if(sscanf(line+20,"%d,%d",&value,&voice)==2 && value>=0 && value<=1 && voice>=0 && voice<=1){muse_settings_set_voice_source(value);muse_settings_set_muse_voice(voice);}printf("@voice_source {\"source\":%d,\"voice\":%d,\"volume\":%d}\n",muse_settings_voice_source(),muse_settings_muse_voice(),muse_settings_volume());fflush(stdout);return true;}
     if(!strncmp(line,"device.recognized=",18)){printf("@recognized_test {\"queued\":%s}\n",muse_chat_recognized_turn(line+18)?"true":"false");fflush(stdout);return true;}
@@ -815,6 +816,7 @@ static bool console_command(char *line, bool whole)
     if (!strcmp(line, "voice.status")) {
         muse_module_llm_status_t state;
         muse_module_llm_status(&state);
+        unsigned baud,op,age,rx;muse_module_llm_diagnostic(&baud,&op,&age,&rx);printf("@uart {\"baud\":%u,\"op\":%u,\"age_ms\":%u,\"rx\":%u}\n",baud,op,age,rx);
         printf("@voice {\"state\":%d,\"mic_active\":%s,\"mic_db\":%.1f,\"issued_generations\":%lu,\"last_error\":%d,\"frame_ms\":%d}\n",
                state.state, state.mic_active ? "true" : "false", (double)state.mic_db,
                (unsigned long)state.issued_generations, state.last_error, muse_board->frame_ms);

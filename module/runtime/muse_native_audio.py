@@ -70,7 +70,9 @@ class Store:
     if not isinstance(text,str) or not text.strip() or len(text.encode())>8192 or '\x00' in text:raise NativeAudioError('Native speech needs its original script')
     if item:
      if item.session!=session or item.text!=text:raise NativeAudioError('Native audio identity changed')
-     return {'received':item.received}
+     if not item.error:return {'received':item.received}
+     if key in self.active:raise NativeAudioError('Native playback cache is busy')
+     item.abort();shutil.rmtree(item.folder);del self.items[key]
     # Only paired device uploads are admitted by the caller. Retain at most eight recent replies.
     if shutil.disk_usage(self.root).free<128*1024*1024:raise NativeAudioError('Native audio cache needs free storage')
     if len(self.items)>=8:
@@ -86,7 +88,9 @@ class Store:
    if op=='abort':
     if not item.done:item.abort()
     return {'received':item.received}
-   if item.done:raise NativeAudioError('Native audio transfer already complete')
+   if item.done:
+    if op=='end' and data.get('bytes')==item.received and data.get('sha256')==item.digest.hexdigest():return {'received':item.received}
+    raise NativeAudioError('Native audio transfer already complete')
    if op=='chunk':
     offset=data.get('offset');encoded=data.get('audio')
     if type(offset) is not int or offset<0 or not isinstance(encoded,str) or len(encoded)>11000:raise NativeAudioError('Invalid native audio block')
@@ -94,6 +98,10 @@ class Store:
     except ValueError:raise NativeAudioError('Invalid native audio encoding')
     if shutil.disk_usage(self.root).free<64*1024*1024:raise NativeAudioError('Native audio cache storage is low')
     if not raw or len(raw)>8192 or offset+len(raw)>MAX_AUDIO:raise NativeAudioError('Native audio exceeds cache bound')
+    if offset<item.received and offset+len(raw)<=item.received:
+     with item.mp3.open('rb') as previous:
+      previous.seek(offset)
+      if previous.read(len(raw))==raw:return {'received':item.received}
     if offset!=item.received:raise NativeAudioError('Native audio block is out of order')
     if item.error or item.decoder.poll() is not None:raise NativeAudioError('Native audio decoder stopped')
     item.file.write(raw);item.file.flush();item.decoder.stdin.write(raw);item.decoder.stdin.flush();item.digest.update(raw);item.received+=len(raw)
@@ -102,75 +110,116 @@ class Store:
     if data.get('bytes')!=item.received or data.get('sha256')!=item.digest.hexdigest():item.abort();raise NativeAudioError('Native audio integrity check failed')
     item.file.close();item.decoder.stdin.close();item.decoder.wait(timeout=8)
     if item.decoder.returncode or item.size()<320: item.error='Native audio decoding failed';raise NativeAudioError(item.error)
-    item.done=True;return {'received':item.received}
+    item.done=True
+    meta={'source_sha256':hashlib.sha256(item.text.encode()).hexdigest(),'audio_bytes':item.received,'audio_sha256':item.digest.hexdigest(),'pcm_bytes':item.size()}
+    target=item.folder/'complete.json';temp=target.with_suffix('.pending');temp.write_text(json.dumps(meta));temp.replace(target)
+    return {'received':item.received}
    raise NativeAudioError('Unknown native audio operation')
- def _chunk(self,item,position,cursor,cancel):
+ def _load(self,key,text):
+  # Complete caches survive a Module restart; partial files never count as ready.
+  base=self.root.parent
+  for folder in base.glob('*/'+key):
+   try:
+    if folder.is_symlink() or folder.parent.is_symlink():continue
+    meta=json.loads((folder/'complete.json').read_text())
+    raw=text.encode('utf8')
+    if meta.get('source_sha256')!=hashlib.sha256(raw).hexdigest():continue
+    mp3=folder/'voice.mp3';pcm=folder/'voice.pcm'
+    if mp3.stat().st_size!=meta['audio_bytes'] or pcm.stat().st_size!=meta['pcm_bytes']:continue
+    if hashlib.sha256(mp3.read_bytes()).hexdigest()!=meta['audio_sha256']:continue
+    item=object.__new__(Item)
+    item.key,item.text,item.session=key,text,None
+    item.folder,item.mp3,item.pcm=folder,mp3,pcm
+    item.received,item.done,item.error=meta['audio_bytes'],True,None
+    item.file=None;item.decoder=None
+    self.items[key]=item
+    return item
+   except (OSError,ValueError,KeyError,TypeError):continue
+  return None
+ def _schedule(self,item,cancel):
   from muse_voice_backend import check_cancel
+  from muse_word_timing import WordTiming
   from muse_speech_text import SpeechText
-  # Mapping is to the authoritative script, never ASR-rewritten display text.
-  spoken=SpeechText(item.text);words=spoken.words;normalized=spoken.text
-  duration=4.;deadline=time.monotonic()+45
-  while True:
-   check_cancel(cancel)
-   if item.error:raise NativeAudioError(item.error)
-   available=item.size()/32000.
-   if item.done and position>=available-.01:return None
-   wanted=position+duration
-   if available<wanted and not item.done:
-    if time.monotonic()>deadline:raise NativeAudioError('Native audio buffering timed out')
-    time.sleep(.04);continue
-   end=min(available,wanted);count=int((end-position)*16000)*2
-   with item.pcm.open('rb') as stream:stream.seek(int(position*16000)*2);pcm=stream.read(count)
-   remaining=[w for w in words if w[1]>cursor]
-   if not remaining:return (pcm,[],end,len(normalized))
-   # A generous lookahead lets unspoken words collapse at the window edge; only stable interior timings are used.
-   candidate=remaining[:min(160,max(24,int(duration*7)))];a=candidate[0][0];z=candidate[-1][1];phrase=normalized[a:z]
-   aligned=self.warm().align(pcm,phrase);limit=(end-position) if item.done and end>=available-.01 else max(0,(end-position)-.65)
-   schedule=[];safe=[];advance=cursor
-   for start,finish,wa,wz in aligned:
-    if finish-start<.025 or finish>limit:continue
-    begin,stop=a+wa,a+wz
-    matches=[w for w in words if w[0]<stop and w[1]>begin]
-    if not matches:continue
-    lo,hi=min(w[2] for w in matches),max(w[3] for w in matches);schedule.append((start,lo,hi));advance=max(advance,stop)
-    raw=phrase[wa:wz].strip()
-    if raw and (raw[-1] in '.!?;:' or (stop<len(normalized) and normalized[stop] in '.!?;:')):
-     boundary=stop+1 if stop<len(normalized) and normalized[stop] in '.!?;:' else stop
-     safe.append((finish,boundary))
-   final=item.done and end>=available-.01
-   if final:return (pcm,schedule,end,len(normalized))
-   # Prefer sentence boundaries; extend the lookahead instead of inserting a mid-sentence gap.
-   choices=[x for x in safe if x[0]>=1.]
-   if choices:
-    finish,advance=choices[-1];finish=min(finish+.12,end-position);n=int(finish*16000)*2
-    return (pcm[:n],[w for w in schedule if w[0]<finish],position+n/32000.,advance)
-   if duration>=24:raise NativeAudioError('Native word timing could not find a safe sentence boundary')
-   duration+=4
+  # Estimate against complete PCM as the safe fallback. Alignment may improve
+  # timing, but it must never truncate, drop or stop valid narration.
+  pcm=item.pcm.read_bytes();spoken=SpeechText(item.text)
+  timing=WordTiming(item.text);fallback=timing.phrase(timing.normalized,pcm)
+  cache=item.folder/'timing.json'
+  signature=hashlib.sha256(item.text.encode()).hexdigest()
+  try:
+   stored=json.loads(cache.read_text())
+   if stored.get('version')==2 and stored.get('source')==signature and stored.get('pcm_bytes')==len(pcm):
+    values=stored['words']
+    if len(values)==len(spoken.words) and all(0<=t<len(pcm)/32000 and 0<=a<b<=len(item.text.encode()) for t,a,b in values):return values
+  except (OSError,ValueError,TypeError,KeyError):pass
+  words=spoken.words;anchors={};position=0.;cursor=0;duration=len(pcm)/32000.
+  try:
+   aligner=self.warm()
+   while position<duration-.04 and cursor<len(words):
+    check_cancel(cancel)
+    end=min(duration,position+24);limit=end if end==duration else end-.8
+    candidates=words[cursor:cursor+120];a=candidates[0][0];z=candidates[-1][1]
+    aligned=aligner.align(pcm[int(position*16000)*2:int(end*16000)*2],spoken.text[a:z])
+    progress=[]
+    for begin,finish,lo,hi in aligned:
+     if finish-begin<.025 or position+finish>limit:continue
+     for index in range(cursor,min(len(words),cursor+len(candidates))):
+      word=words[index]
+      if word[0]<a+hi and word[1]>a+lo:
+       anchors.setdefault(index,position+begin);progress.append((index,position+begin))
+    if end==duration:break
+    if not progress:break
+    index,at=max(progress,key=lambda x:x[0])
+    if index<=cursor or at<=position+.2:break
+    # Overlap the last stable word for analysis only. Playback is one uncut file.
+    cursor,position=index,at
+  except Exception:
+   check_cancel(cancel) # cancellation remains authoritative; alignment is optional
+  # Use true timings only when every word has a stable monotonic anchor. A
+  # collapsed alignment can otherwise make the reader race to the last word.
+  good=len(anchors)==len(words) and all(anchors[i]<=anchors[i+1] for i in range(len(words)-1))
+  schedule=[(anchors[i],w[2],w[3]) for i,w in enumerate(words)] if good else fallback
+  check_cancel(cancel)
+  temporary=cache.with_suffix('.pending');temporary.write_text(json.dumps({'version':2,'source':signature,'pcm_bytes':len(pcm),'words':schedule}));temporary.replace(cache)
+  return schedule
  def play(self,backend,key,text,volume,cancel,on_play):
   from muse_voice_backend import check_cancel
   with self.lock:
-   item=self.items.get(key)
+   item=self.items.get(key) or self._load(key,text)
    if item is not None:self.active.add(key)
   if item is None or item.text!=text:raise NativeAudioError('Native reply cache is unavailable')
-  position=0.;cursor=0;started=False
   if backend.mic:backend.mic.pause_output(True)
+  total=0;blocks=0
   try:
-   self.warm()
-   part=self._chunk(item,position,cursor,cancel)
-   while part is not None:
-    check_cancel(cancel);pcm,schedule,next_position,next_cursor=part
-    future=self.pool.submit(self._chunk,item,next_position,next_cursor,cancel)
-    backend.word_schedule=schedule
-    if not started:
-     if on_play:on_play()
-     started=True
-    backend.play(pcm,volume,cancel)
-    part=future.result(timeout=50);position,cursor=next_position,next_cursor
+   deadline=time.monotonic()+1200
+   while not item.done:
+    check_cancel(cancel)
+    if item.error:raise NativeAudioError(item.error)
+    if time.monotonic()>deadline:raise NativeAudioError('Complete reply buffering timed out')
+    time.sleep(.025)
+   if item.error:raise NativeAudioError(item.error)
+   size=item.size()
+   if size<320 or size%2 or size>32*1024*1024:raise NativeAudioError('Invalid complete decoded audio')
+   schedule=self._schedule(item,cancel)
+   # Fit the native IPC budget. Prefer complete sentence endings only for
+   # exceptionally long replies; ordinary replies play in a single native call.
+   maximum=5*1024*1024;position=0
+   with item.pcm.open('rb') as stream:
+    while position<size:
+     check_cancel(cancel);end=min(size,position+maximum)
+     if end<size:
+      choices=[int(t*16000)*2 for t,a,b in schedule if position<t*32000<end and item.text.encode()[max(0,a-3):a].rstrip().endswith((b'.',b'!',b'?'))]
+      if choices:end=choices[-1]
+     stream.seek(position);pcm=stream.read(end-position)
+     if len(pcm)!=end-position:raise NativeAudioError('Cached audio was shortened')
+     backend.word_schedule=[(t-position/32000,a,b) for t,a,b in schedule if position/32000<=t<end/32000]
+     if not blocks and on_play:on_play()
+     backend.play(pcm,volume,cancel)
+     total+=len(pcm);blocks+=1;position=end
+   if total!=size:raise NativeAudioError('Not all cached audio was played')
+   result={'pcm_bytes':size,'played_pcm_bytes':total,'blocks':blocks,'complete':True,'words':len(schedule)}
+   (item.folder/'last-playback.json').write_text(json.dumps(result))
+   return result
   finally:
-   if 'future' in locals():
-    # Acknowledgement waits for the current bounded timing task to stop.
-    future.cancel()
-    try:future.result(timeout=50)
-    except Exception:pass
    with self.lock:self.active.discard(key)
    if backend.mic:backend.mic.pause_output(False)

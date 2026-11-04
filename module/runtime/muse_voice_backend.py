@@ -21,7 +21,7 @@ import muse_zmq as zmq
 ASR_MODEL = "sherpa-ncnn-streaming-zipformer-20M-2023-02-17"
 TTS_MODEL = "melotts_zh-cn"
 PCM_RATE = 16000
-MAX_PCM = 4 * 1024 * 1024
+MAX_PCM = 5 * 1024 * 1024  # Leave 1 MiB below the native IPC message bound.
 MAX_TRANSCRIPT = 2048
 TASK_RE = re.compile(r"^(asr|melotts|kws|llm|muse_llm)\.[0-9]{1,10}$")
 BREAKS = re.compile(r"[，、,。.!！?？;；]+")

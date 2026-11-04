@@ -57,7 +57,9 @@ def play(backend,pcm,volume,cancel,check_cancel,scale_pcm,rate,Error):
      _,a,b=schedule[index];backend.word_callback(a,b);index+=1
    elif status==b'None':
     if saw:
-     if time.monotonic()-started<max(0.,(expected-offset)*.8-.25):raise Error(-14,'Native audio ended too early')
+     if time.monotonic()-started<max(0.,expected-offset-max(.25,expected*.005)):raise Error(-14,'Native audio ended too early')
+     while backend.word_callback and index<len(schedule):
+      _,a,b=schedule[index];backend.word_callback(a,b);index+=1
      backend.stop_audio();return {'pcm_bytes':len(pcm),'observed_running':True,'joined':True}
    else:raise Error(-3,'Unexpected native playback status')
    if time.monotonic()-beginning-paused_total>expected*3+30:raise Error(-12,'Native playback completion was not observed')

@@ -67,9 +67,10 @@ the complete built/flashed application checks above refer to the reference insta
   reference build; no maintainer location is embedded.
 - Factory provisioning, automatic installation/rollback on every vendor firmware, and
   other M5 hosts are not validated by this release.
-- Replay uses received text retained in RAM. It does not regenerate a missing answer,
-  fetch an old web chat, guarantee a response longer than the existing bounded buffers,
-  or retain the replay cache across reboot/new turns.
+- Replay controls use the current reply text retained in Core2 RAM. Complete native
+  audio caches and timing can survive a Module service restart, while the Core2 still
+  holds that reply. This does not restore playback controls after a Core2 reboot,
+  regenerate a missing answer, fetch an old web chat, or remove response-size bounds.
 - Local library recall and bounded recent context are not unlimited or perfect memory.
 - AI transcript review is a suggestion. Raw transcription remains available and the
   reviewer can reject or defer uncertain edits.
@@ -114,3 +115,30 @@ The portable suite passed with platform-specific tests skipped on Windows;
 the four helper tests were run separately on the Linux Module. The sanitized
 public profile retains its separate weather configuration; the hardware build
 above refers to the reference installation.
+
+## Edition 0.3.1 playback checks
+
+The reference Core2 application compiled, passed application-slot digest and
+healthy-boot checks, and retained its pairing and 50% volume. The factory
+115200-baud Module link was restored after higher-rate reconnect checks failed.
+
+The previously shortened native reply was transferred completely: 1,173,696 MP3
+bytes, with matching SHA-256 and a decoded duration of 146.712 seconds. Actual
+Core2 cached playback then played all 4,694,784 PCM bytes in one native call.
+All 463 scheduled words were retained; the reader reached byte 2,232, the end of
+the original script. No playback error was reported. The speaking interval was
+152.63 seconds including local setup/volume scaling. Two cached restarts entered
+Speaking in 3.059 and 2.954 seconds; these are observations, not latency promises.
+
+Additional reference checks exercised Pause/Resume, Settings, Stop and Restart,
+including a muted 32-second real-audio replay after a fresh cache-store instance.
+Real Module decoding tests checked ordered transfers, duplicate chunk/end
+acknowledgements, hashes, aborted-transfer recovery and original word offsets.
+Portable tests cover the actual volume scaler with a 147-second reply and verify
+that a larger reply chooses an earlier sentence boundary without omitting PCM.
+
+The final Windows source suite passed 24 tests with five platform skips; Linux
+CI runs all 29. Personal audio, scripts and device reports are excluded from the
+public repository. Full initial buffering can still take minutes for long clips
+on the factory serial link; cached replay avoids that transfer. Timing falls
+back to complete-audio estimates if local alignment fails.
