@@ -2,6 +2,7 @@
 
 ## 0.3.0
 
+- Corrected published overlay checksums to use canonical LF source bytes on all platforms.
 - Added optional native Muse narration and Sound voice-source/voice selectors.
 - Verified Helio and Aria without changing the Muse account's global voice.
 - Prefetch native audio while Muse prepares its reply; upload/decode off the UI thread.

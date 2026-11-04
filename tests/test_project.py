@@ -22,7 +22,9 @@ class ProjectChecks(unittest.TestCase):
         self.assertEqual(len(manifest['commit']),40)
         for name,item in manifest['files'].items():
             self.assertNotIn('..',Path(name).parts)
-            self.assertEqual(hashlib.sha256((ROOT/'firmware/overlay'/name).read_bytes()).hexdigest(),item['overlay_sha256'],name)
+            raw=(ROOT/'firmware/overlay'/name).read_bytes()
+            self.assertNotIn(b'\r\n',raw,name+': normalize source to LF before updating hashes')
+            self.assertEqual(hashlib.sha256(raw).hexdigest(),item['overlay_sha256'],name)
 
     def test_models_are_external(self):
         assets=json.loads((ROOT/'module/assets.json').read_text())['assets']

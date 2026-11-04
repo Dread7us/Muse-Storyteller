@@ -10,6 +10,9 @@ of every Android/iOS/Linux SDK file. Upstream remains the authority for the foun
    do not overwrite an edited `.local/sdk` with a new overlay.
 3. Update `firmware/upstream.json` only after reviewing every changed base file. Its
    hashes are change detectors, not an invitation to blindly replace expected values.
+   After reviewing the overlay changes, run `python tools/update_overlay_manifest.py`.
+   It normalizes source files to LF (matching `.gitattributes` and GitHub checkouts)
+   and refreshes overlay hashes without changing the pinned upstream/base hashes.
 4. Recheck dependency versions and the LVGL patch’s before/after hashes.
 5. Run public checks and an isolated Core2-v1.1 source build.
 6. Validate the real hardware lifecycle, backed up first, before publishing new hardware claims.
