@@ -58,7 +58,7 @@ This requires the matching Core2 firmware and Module bridge. Optional timing
 runs on one low-priority CPU thread so it cannot monopolize both Module cores.
 
 The reference installation also wraps its factory startup cue with
-`module/runtime/muse_boot_chime.sh`. An atomic `/run` lock allows one playback
+`module/runtime/muse_boot_chime.sh`. A direct Python atomic `/run` directory claim allows one playback
 per boot, even if the startup script is invoked repeatedly. Installing that
 wrapper requires an exact backup and a reviewed change to the factory startup
 script; it is not applied automatically by the source preparation helper.

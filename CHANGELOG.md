@@ -4,7 +4,7 @@
 
 - Wait for the vendor's audio handlers during cold startup, then complete the real microphone/decoder warm-up before Ready. Runtime stop retries remain short and bounded.
 - Retry one temporary Muse lookup failure during account/setup startup without discarding the first question.
-- Allow the factory startup cue only once per boot, using an atomic lock; preserve its original audio asset.
+- Allow the factory startup cue only once per boot, using Python's direct atomic directory claim; preserve its original audio asset.
 - Add the SDK's direct message-addressed Muse audio route, avoiding per-answer file/helper orchestration. Keep Local, Helio and Aria selectable.
 - Clearly label direct narration as using the Muse app's voice and pace; preserve the stored device speed for the other voices.
 - Transfer protected native requests in an ASCII envelope so punctuation, Unicode and unmatched code braces cannot confuse the vendor's brace-counting UART extractor.
