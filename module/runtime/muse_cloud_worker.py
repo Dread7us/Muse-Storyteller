@@ -1,12 +1,18 @@
 """Paired-device native audio uploads, off the voice/control router thread."""
 import queue
 import threading
-import hashlib,json
+import base64,hashlib,json
 from muse_native_audio import Store, NativeAudioError
 
 def checked_payload(data):
     if data.get('op')!='packet':return {k:v for k,v in data.items() if k!='_transport_verified'}
     payload=data.get('payload');digest=data.get('sha256')
+    if 'payload_b64' in data:
+        encoded=data['payload_b64']
+        if payload is not None or not isinstance(encoded,str) or len(encoded)>43692:
+            raise NativeAudioError('Invalid native request envelope')
+        try:payload=base64.b64decode(encoded,validate=True).decode('utf8')
+        except (ValueError,UnicodeError):raise NativeAudioError('Invalid native request encoding')
     if not isinstance(payload,str) or not isinstance(digest,str) or len(payload.encode())>32768 or hashlib.sha256(payload.encode()).hexdigest()!=digest:
         raise NativeAudioError('Native request integrity check failed')
     try:decoded=json.loads(payload)

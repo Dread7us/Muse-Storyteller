@@ -173,6 +173,7 @@ class Backend:
         self.word_schedule = []
         self.mic = None
         self.mic_proxy_owned = False
+        self.starting = True
 
     def request_id(self):
         self.sequence += 1
@@ -428,6 +429,7 @@ class Backend:
         self.mic.finish_prime()
         self.start_asr()
         self.pause_asr()
+        self.starting = False
 
     def start_asr(self):
         if self.asr_id:
@@ -519,10 +521,29 @@ class Backend:
     def stop_audio(self):
         # queue_play_stop prevents legacy queued jobs from starting. All new
         # adapter audio is handled only through the tracked play_raw thread.
-        if self.rpc("audio", "queue_play_stop") != b"None":
-            raise BridgeError(-11, "Legacy playback queue stop was rejected")
-        if self.rpc("audio", "play_stop", timeout_ms=15000) != b"None":
-            raise BridgeError(-11, "Native playback join was rejected")
+        # The vendor audio RPC can answer before its handlers are registered
+        # during a cold boot. Retry only these idempotent stop operations; never
+        # repeat a play request or mark playback stopped without both replies.
+        for action, timeout, message in (
+                ("queue_play_stop", 3000, "Legacy playback queue stop was rejected"),
+                ("play_stop", 15000, "Native playback join was rejected")):
+            attempts = 61 if getattr(self, "starting", False) else 4
+            deadline = time.monotonic() + 30
+            for attempt in range(attempts):
+                try:
+                    reply = self.rpc("audio", action, timeout_ms=timeout)
+                    if reply == b"None":
+                        break
+                    raise BridgeError(-11, message)
+                except BridgeError as exc:
+                    if exc.code not in (-10, -11) or attempt == attempts - 1 or time.monotonic() >= deadline:
+                        raise
+                    if attempts > 4:
+                        if attempt == 0:
+                            print(json.dumps({"phase": "waiting_for_audio", "ready": False}), flush=True)
+                        time.sleep(0.5)
+                    else:
+                        time.sleep((0.15, 0.3, 0.6)[attempt])
         self.active_play = False
 
     def play(self, pcm, volume, cancel):

@@ -20,6 +20,15 @@ class Player:
   self.parts.append(len(pcm));self.words.extend(self.word_schedule)
   if self.interrupt:cancel.set();check(cancel)
 class TransferRetries(unittest.TestCase):
+ def test_ascii_envelope_preserves_unicode_quotes_and_unmatched_code_braces(self):
+  payload=json.dumps({'op':'begin','text':'A lantern\u2014and "quoted" words.\nAn unfinished code block: {'},ensure_ascii=False)
+  packet=dict(op='packet',payload_b64=base64.b64encode(payload.encode()).decode(),sha256=hashlib.sha256(payload.encode()).hexdigest())
+  decoded=checked_payload(packet)
+  self.assertEqual(decoded['text'],json.loads(payload)['text']);self.assertTrue(decoded['_transport_verified'])
+  packet['payload_b64']+='!'
+  with self.assertRaises(native.NativeAudioError):checked_payload(packet)
+  packet['payload']='ambiguous'
+  with self.assertRaises(native.NativeAudioError):checked_payload(packet)
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.store=native.Store(self.temp.name);self.store.warm=lambda:None
   class Decoder:

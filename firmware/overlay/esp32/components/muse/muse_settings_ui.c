@@ -1165,14 +1165,20 @@ static void on_voice_source(lv_event_t *e){
     int value=lv_dropdown_get_selected(lv_event_get_target(e));muse_settings_set_voice_source(value);
     if(s_native_voice_row){if(value)lv_obj_remove_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);}
 }
-static void on_native_voice(lv_event_t *e){muse_settings_set_muse_voice(lv_dropdown_get_selected(lv_event_get_target(e)));}
+static void voice_speed_state(void){
+    if(!s_speed_sl)return;
+    bool direct=muse_settings_voice_source()==1&&muse_settings_muse_voice()==2;
+    if(direct){lv_obj_add_state(s_speed_sl,LV_STATE_DISABLED);set_text(s_speed_val,"App pace");}
+    else{lv_obj_remove_state(s_speed_sl,LV_STATE_DISABLED);static const char *names[]={"Slow","Normal","Fast"};set_text(s_speed_val,names[muse_settings_speech_speed()]);}
+}
+static void on_native_voice(lv_event_t *e){muse_settings_set_muse_voice(lv_dropdown_get_selected(lv_event_get_target(e)));voice_speed_state();}
 static void voice_options(lv_obj_t *list){
     label(list,&lv_font_montserrat_16,COLOR_DIM,"Voice source");
     lv_obj_t *source=lv_dropdown_create(list);lv_obj_set_width(source,lv_pct(100));
     lv_dropdown_set_options(source,"Local / offline\nMuse / online");lv_dropdown_set_selected(source,muse_settings_voice_source());
     lv_obj_add_event_cb(source,on_voice_source,LV_EVENT_VALUE_CHANGED,NULL);
     s_native_voice_row=lv_dropdown_create(list);lv_obj_set_width(s_native_voice_row,lv_pct(100));
-    lv_dropdown_set_options(s_native_voice_row,"Helio - American\nAria - American");lv_dropdown_set_selected(s_native_voice_row,muse_settings_muse_voice());
+    lv_dropdown_set_options(s_native_voice_row,"Helio - American\nAria - American\nMuse app voice - direct");lv_dropdown_set_selected(s_native_voice_row,muse_settings_muse_voice());
     lv_obj_add_event_cb(s_native_voice_row,on_native_voice,LV_EVENT_VALUE_CHANGED,NULL);
     lv_obj_t *pickers[]={source,s_native_voice_row};
     for(unsigned i=0;i<2;i++){
@@ -1185,7 +1191,8 @@ static void voice_options(lv_obj_t *list){
         lv_obj_set_style_radius(pickers[i],8,0);
     }
     if(!muse_settings_voice_source())lv_obj_add_flag(s_native_voice_row,LV_OBJ_FLAG_HIDDEN);
-    note(list,"Next reply. Local fallback.\nOnline uses Muse allowance.");
+    note(list,"Direct uses Muse's voice and pace.\nHelio / Aria use the speed control.\nOnline uses Muse allowance.");
+    voice_speed_state();
 }
 static void build_sound_page(lv_obj_t *tile)
 {
@@ -1267,6 +1274,7 @@ void muse_settings_ui_transport_visible(bool visible){
 }
 static void tick_sound(void)
 {
+    voice_speed_state();
     if(s_vol_sl && !lv_obj_has_state(s_vol_sl,LV_STATE_PRESSED)){int value=muse_settings_volume();if(lv_slider_get_value(s_vol_sl)!=value){lv_slider_set_value(s_vol_sl,value,LV_ANIM_OFF);set_val(s_vol_val,"%d%%",value);}}
     if(s_bright_sl && !lv_obj_has_state(s_bright_sl,LV_STATE_PRESSED)){int value=muse_settings_brightness();if(lv_slider_get_value(s_bright_sl)!=value){lv_slider_set_value(s_bright_sl,value,LV_ANIM_OFF);set_val(s_bright_val,"%d%%",value);}}
     if(s_speed_sl && !lv_obj_has_state(s_speed_sl,LV_STATE_PRESSED)){int value=muse_settings_speech_speed();if(lv_slider_get_value(s_speed_sl)!=value){static const char *names[]={"Slow","Normal","Fast"};lv_slider_set_value(s_speed_sl,value,LV_ANIM_OFF);set_text(s_speed_val,names[value]);}}

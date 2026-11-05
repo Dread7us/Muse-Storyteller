@@ -255,6 +255,7 @@ struct turn_t {
     char native_job[25];
     bool native_started,native_claimed;
     int native_voice,native_speed;
+    bool native_direct;
     int64_t dict_id, chat_id;
     int64_t start_us, end_sent_us, chat_us, last_event_us, last_content_us;
     int64_t playback_paused_us, playback_pause_check;
@@ -1236,7 +1237,11 @@ static void send_chat(const char *text, const char *modality)
     const char *base=remembered ? remembered : text;
     const char *preferences="My standing response preferences: Use U.S. customary measurements only: Fahrenheit, miles, feet/inches, pounds/ounces and U.S. gallons. Convert metric measurements before replying. Use clear U.S. dates and 12-hour AM/PM times. Keep SCP identifiers unchanged. This gadget renders Markdown emphasis, lists, quotes and code; links display an address rather than opening a browser. The current question may be an imperfect offline speech transcript. Use the recent conversation to resolve obvious phonetic mistakes or missing spaces, especially names and acronyms. For example, in an established SCP-story conversation, a garbled request for a new Foundation story likely means an SCP Foundation story. Do not invent missing details, alter identifier digits, or reinterpret a clear request. If two interpretations materially differ, ask one short clarifying question. Apply these preferences while answering my current question below.\n\n";
     char native_prompt[1400]={};
-    if(!s_turn.text && !s_local_only && muse_settings_voice_source()==1){
+    if(!s_turn.text && !s_local_only && muse_settings_voice_source()==1 && muse_settings_muse_voice()==2){
+        s_turn.native_direct=true;modality="voice";
+        strlcpy(native_prompt,"\nDevice narration for THIS turn replaces older file-delivery instructions: the device retrieves your native voice by response message ID automatically. Return the complete requested answer or story directly as your normal response text with native voice. Do not create audio files, run speech/podcast tools, write source.md, or launch a delivery helper for this turn. Keep the full requested story and its paragraphs; do not shorten it for delivery. These delivery instructions are not part of the answer.\n",sizeof(native_prompt));
+    }
+    if(!s_turn.text && !s_local_only && muse_settings_voice_source()==1 && !s_turn.native_direct){
         for(unsigned i=0;i<3;i++)snprintf(s_turn.native_job+8*i,9,"%08lx",(unsigned long)esp_random());
         s_turn.native_voice=muse_settings_muse_voice();s_turn.native_speed=muse_settings_speech_speed();
         const char *voice=s_turn.native_voice==1?"avocado_v2:MAI_01":"avocado_v2:MAI_03";
@@ -1476,6 +1481,7 @@ static void message_done(int i, const char *final_text)
         append_text(m, final_text);
     }
 #if CONFIG_MUSE_MODULE_LLM
+    if(s_turn.native_direct&&!m.len){turn_fail("MUSE SENT NO READABLE TEXT");return;}
     const char *conversation_text = final_text && final_text[0] ? final_text :
         (s_turn.texts ? s_turn.texts + i * TEXT_MAX : nullptr);
     if (conversation_text && !s_turn.native_job[0]) m.conversation_id = s_bench_reply?muse_conversation_add_transient(false,conversation_text):muse_conversation_add(false, conversation_text);
@@ -1614,6 +1620,20 @@ static void start_tts(void)
             if (!local_text || m.len >= TEXT_MAX) {
                 turn_fail("REPLY TOO LONG FOR LOCAL VOICE");
                 return;
+            }
+            if(s_turn.native_direct && !m.external_key[0]){
+                if(!s_turn.native_started){
+                    s_turn.native_started=muse_native_voice_begin_message(m.id,local_text,s_turn.gen);
+                    if(!s_turn.native_started){muse_state_set_caption("Preparing Muse audio...");return;}
+                }
+                char key[25];int ready=muse_native_voice_copy(s_turn.gen,s_turn.texts+i*TEXT_MAX,TEXT_MAX,key);
+                if(ready==0){muse_state_set_caption("Buffering Muse audio...");return;}
+                if(ready!=1){s_can_restart=true;turn_fail("MUSE AUDIO FAILED - TAP RESTART");return;}
+                strlcpy(m.external_key,key,sizeof(m.external_key));s_turn.native_started=false;
+                // Each finished assistant message gets its own immutable clip.
+                // Do not skip later messages, paragraphs or list items.
+                // Continue polling chat so additional assistant messages are
+                // retained while this complete clip plays.
             }
             if(s_turn.native_job[0] && !m.external_key[0] && !s_replaying){
                 if(s_turn.native_claimed){m.native_skip=true;m.tts=TTS_FINISHED;continue;}
@@ -2244,9 +2264,11 @@ static bool poll_socket(void)
 static void drop_connection(const char *why)
 {
     bool in_turn = s_turn.phase != P_IDLE;
+    bool cached=s_turn.native_direct&&s_turn.tts_msg>=0&&s_turn.msgs[s_turn.tts_msg].external_key[0];
     disconnect(why);
     s_auto_next_us = now_us() + s_auto_backoff_us;
-    if (in_turn) {
+    if(in_turn&&cached){s_local_only=true;s_turn.agent_busy=false;}
+    else if (in_turn) {
         turn_fail("LOST CONNECTION TO MUSE");
     }
     muse_hatch_report(MUSE_HATCH_UNTESTED, "");

@@ -122,6 +122,7 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
     portEXIT_CRITICAL(&lock);return true;
 }
 static bool rpc_once(cJSON *data,bool cleanup){
+    portENTER_CRITICAL(&lock);rpc_error=-90;portEXIT_CRITICAL(&lock);
     char owner[9];muse_module_llm_session(owner);
     if(!owner[0]||(!cleanup&&stopped())){cJSON_Delete(data);return false;}
     // Preserve the exact serialized payload through the UART parser. A valid
@@ -131,7 +132,14 @@ static bool rpc_once(cJSON *data,bool cleanup){
     data=cJSON_CreateObject();
     if(!data){cJSON_free(payload);return false;}
     cJSON_AddStringToObject(data,"op","packet");
-    cJSON_AddItemToObject(data,"payload",cJSON_CreateStringReference(payload));
+    // The vendor's UART extractor counts braces even inside quoted JSON.
+    // An ASCII envelope keeps response punctuation and unmatched code braces
+    // out of that extractor; the checksum still covers the original UTF-8.
+    size_t encoded_size=4*((strlen(payload)+2)/3)+1,encoded_length=0;
+    char *encoded_payload=(char *)malloc(encoded_size);
+    if(!encoded_payload||mbedtls_base64_encode((uint8_t *)encoded_payload,encoded_size,&encoded_length,(const uint8_t *)payload,strlen(payload))){free(encoded_payload);cJSON_free(payload);cJSON_Delete(data);return false;}
+    encoded_payload[encoded_length]=0;
+    cJSON_AddStringToObject(data,"payload_b64",encoded_payload);free(encoded_payload);
     cJSON_AddStringToObject(data,"sha256",payload_hash);
     cJSON *root=cJSON_CreateObject();if(!root||!data){cJSON_Delete(root);cJSON_Delete(data);cJSON_free(payload);return false;}
     char id[64];snprintf(id,sizeof(id),"cloud-%08lx-%08lx",(unsigned long)esp_random(),(unsigned long)++rpc_serial);
@@ -307,6 +315,126 @@ static void worker(void *){
     }
     if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);if(!stopped())state.store(-1);}
     running.store(false);vTaskDeleteWithCaps(nullptr);
+}
+
+/* A bounded producer/consumer buffer applies backpressure to the encrypted
+ * download. UART acknowledgements arrive on the independent Module task, so
+ * draining never depends on a second request on the blocked network task.
+ * Neither task runs on LVGL. Complete HTTP EOF + SHA + decoder success are
+ * required before the existing disk-backed player is allowed to speak. */
+static constexpr size_t DIRECT_CAP=256*1024;
+EXT_RAM_BSS_ATTR static uint8_t direct_ring[DIRECT_CAP];
+static size_t direct_read,direct_write,direct_used;
+static int direct_status;
+static bool direct_done,direct_failed;
+static uint32_t direct_token;
+static char direct_message[128];
+static void direct_cb(void *context,int status,const uint8_t *data,size_t length,bool end){
+    uint32_t token=(uint32_t)(uintptr_t)context;size_t at=0;
+    int64_t deadline=now()+10000000;
+    while(at<length){
+        portENTER_CRITICAL(&lock);
+        if(token!=direct_token){portEXIT_CRITICAL(&lock);return;}
+        if(status)direct_status=status;
+        if(stopped()||direct_failed){direct_failed=true;portEXIT_CRITICAL(&lock);return;}
+        size_t take=length-at,room=DIRECT_CAP-direct_used;
+        if(take>room)take=room;
+        if(take>DIRECT_CAP-direct_write)take=DIRECT_CAP-direct_write;
+        if(take){memcpy(direct_ring+direct_write,data+at,take);direct_write=(direct_write+take)%DIRECT_CAP;direct_used+=take;at+=take;}
+        portEXIT_CRITICAL(&lock);
+        if(!take){
+            if(now()>deadline){portENTER_CRITICAL(&lock);if(token==direct_token)direct_failed=direct_done=true;portEXIT_CRITICAL(&lock);return;}
+            pause_ms(2);
+        }
+    }
+    portENTER_CRITICAL(&lock);
+    if(token==direct_token){if(status)direct_status=status;if(status<0)direct_failed=true;if(end||status<0)direct_done=true;}
+    portEXIT_CRITICAL(&lock);
+}
+static bool direct_transfer(bool legacy){
+    char encoded_id[400],path[512];size_t pos=0;
+    for(const unsigned char *p=(const unsigned char *)direct_message;*p;p++){
+        unsigned char c=*p;
+        if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.')encoded_id[pos++]=(char)c;
+        else{snprintf(encoded_id+pos,4,"%%%02X",c);pos+=3;}
+    }encoded_id[pos]=0;
+    snprintf(path,sizeof(path),"%s?message_id=%s",legacy?"/voice/tts-stream":"/api/voice/tts-stream",encoded_id);
+    cJSON *begin=operation("begin");cJSON_AddStringToObject(begin,"text",script);
+    if(!rpc(begin)){
+        portENTER_CRITICAL(&lock);int error=rpc_error;portEXIT_CRITICAL(&lock);
+        printf("@native_direct {\"event\":\"cache_begin_failed\",\"code\":%d}\n",error);fflush(stdout);return false;
+    }
+    portENTER_CRITICAL(&lock);bool cached=rpc_complete;size_t cached_bytes=rpc_received;portEXIT_CRITICAL(&lock);
+    if(cached&&cached_bytes>=128){buffered(cached_bytes,cached_bytes);phase(4);state.store(1);return true;}
+    // A retry re-downloads the immutable message and verifies already admitted
+    // blocks too. The receiver accepts identical duplicates, never replacements.
+    portENTER_CRITICAL(&lock);
+    direct_read=direct_write=direct_used=0;direct_status=0;direct_done=direct_failed=false;uint32_t token=++direct_token;
+    portEXIT_CRITICAL(&lock);
+    const char *headers[]={"Accept","audio/mpeg",nullptr};
+    int64_t request=muse_link_req_open("GET",path,headers,true,direct_cb,(void *)(uintptr_t)token);
+    if(!request)return false;
+    psa_hash_operation_t digest=PSA_HASH_OPERATION_INIT;
+    bool okay=psa_hash_setup(&digest,PSA_ALG_SHA_256)==PSA_SUCCESS,finished=false;
+    uint8_t block[4096];char encoded[5500];size_t offset=0;int status=0;
+    int64_t deadline=now()+360000000,first=0;
+    phase(2);buffered(0,0);
+    while(okay&&!stopped()&&now()<deadline){
+        size_t count=0;bool failed=false;
+        portENTER_CRITICAL(&lock);
+        status=direct_status;finished=direct_done;failed=direct_failed;
+        count=direct_used>sizeof(block)?sizeof(block):direct_used;
+        // Coalesce typical small network frames into full UART blocks.
+        if(count<sizeof(block)&&!finished)count=0;
+        if(count){size_t a=count>DIRECT_CAP-direct_read?DIRECT_CAP-direct_read:count;memcpy(block,direct_ring+direct_read,a);if(count>a)memcpy(block+a,direct_ring,count-a);direct_read=(direct_read+count)%DIRECT_CAP;direct_used-=count;}
+        portEXIT_CRITICAL(&lock);
+        if(failed||(status&&!(status>=200&&status<300))){okay=false;break;}
+        if(count){
+            if(!first){first=now();printf("@native_direct {\"event\":\"first_audio\",\"ms\":%u}\n",(unsigned)((first-started_us)/1000));fflush(stdout);}
+            if(offset+count>32*1024*1024||psa_hash_update(&digest,block,count)!=PSA_SUCCESS){okay=false;break;}
+            size_t written=0;char hash[65];
+            if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block,count)||!hex_digest(block,count,hash)){okay=false;break;}encoded[written]=0;
+            cJSON *chunk=operation("chunk");cJSON_AddNumberToObject(chunk,"offset",offset);cJSON_AddNumberToObject(chunk,"bytes",count);cJSON_AddStringToObject(chunk,"audio",encoded);cJSON_AddStringToObject(chunk,"sha256",hash);
+            if(!rpc(chunk)){okay=false;break;}
+            offset+=count;buffered(offset,0);
+        }else if(finished)break;
+        else pause_ms(5);
+    }
+    portENTER_CRITICAL(&lock);++direct_token;portEXIT_CRITICAL(&lock);
+    if(!finished||!okay||stopped())muse_link_req_cancel(request);
+    okay=okay&&finished&&!stopped()&&status>=200&&status<300&&offset>=128;
+    if(okay){
+        phase(3);uint8_t binary[32];size_t written=0;char hash[65];
+        okay=psa_hash_finish(&digest,binary,sizeof(binary),&written)==PSA_SUCCESS&&written==32;
+        if(okay){for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",binary[i]);cJSON *end=operation("end");cJSON_AddNumberToObject(end,"bytes",offset);cJSON_AddStringToObject(end,"sha256",hash);okay=rpc(end);}
+    }
+    psa_hash_abort(&digest);
+    if(okay){buffered(offset,offset);phase(4);state.store(1);}
+    else rpc(operation("abort"),true);
+    printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"ms\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)((now()-started_us)/1000));fflush(stdout);
+    // Match the official client: only a 404 selects the legacy endpoint.
+    return okay;
+}
+static void direct_worker(void *){
+    bool ready=false;
+    for(unsigned attempt=0;attempt<2&&!stopped();attempt++){
+        if(attempt){phase(7);pause_ms(500);}
+        ready=direct_transfer(false);
+        portENTER_CRITICAL(&lock);int status=direct_status;portEXIT_CRITICAL(&lock);
+        if(!ready&&status==404&&!stopped())ready=direct_transfer(true);
+        if(ready)break;
+    }
+    if(!ready){phase(stopped()?6:5,8);if(!stopped())state.store(-1);}
+    running.store(false);vTaskDeleteWithCaps(nullptr);
+}
+bool muse_native_voice_begin_message(const char *message,const char *text,uint32_t gen){
+    if(!message||!*message||strlen(message)>=sizeof(direct_message)||!text||!*text||strlen(text)>=sizeof(script))return false;
+    bool expected=false;if(!running.compare_exchange_strong(expected,true))return false;
+    generation=gen;strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
+    for(unsigned i=0;i<3;i++)snprintf(job+8*i,9,"%08lx",(unsigned long)esp_random());
+    cancelled.store(false);state.store(0);
+    portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,job,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
+    if(xTaskCreatePinnedToCoreWithCaps(direct_worker,"muse_direct",16384,nullptr,3,nullptr,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){running.store(false);state.store(-1);return false;}return true;
 }
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
     bool expected=false;if(!key||strlen(key)!=24||!running.compare_exchange_strong(expected,true))return false;

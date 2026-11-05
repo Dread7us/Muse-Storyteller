@@ -1,5 +1,14 @@
 # Release history
 
+## 0.3.4
+
+- Wait for the vendor's audio handlers during cold startup, then complete the real microphone/decoder warm-up before Ready. Runtime stop retries remain short and bounded.
+- Add the SDK's direct message-addressed Muse audio route, avoiding per-answer file/helper orchestration. Keep Local, Helio and Aria selectable.
+- Clearly label direct narration as using the Muse app's voice and pace; preserve the stored device speed for the other voices.
+- Transfer protected native requests in an ASCII envelope so punctuation, Unicode and unmatched code braces cannot confuse the vendor's brace-counting UART extractor.
+- Buffer and verify each finished message before playback; continue receiving subsequent messages while cached audio plays.
+- Retain cached playback across a connection drop and keep Pause/Resume, Stop, Restart, volume and reader controls in the existing playback path.
+
 ## 0.3.3
 
 - Automatically reconnect and resume the same protected native audio job after a temporary Module/service or transfer failure, with at most two recovery attempts.

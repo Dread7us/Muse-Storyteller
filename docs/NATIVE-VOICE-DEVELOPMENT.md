@@ -1,13 +1,16 @@
 # Native Muse narration
 
-Edition 0.3.3 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.4 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
 
 ## On the device
 
-Open Sound, choose **Muse / online**, then select **Helio** or **Aria**. Both
+Open Sound, choose **Muse / online**, then select **Muse app voice – direct**,
+**Helio**, or **Aria**. Direct uses the voice and pace selected in Muse; the device
+speed slider is disabled in that mode and shows **App pace**. Helio and Aria
+keep the device's Slow / Normal / Fast presets. Both
 voices were tested through native generation and device playback. Source, voice
 and Slow / Normal / Fast apply to the next reply. Volume remains live. The local
 Piper voice remains installed as the separate Local option. A native preparation
@@ -21,7 +24,30 @@ verified voices are offered; the other catalogue entries are not advertised as
 available. The currently tested native connection does not expose an authoritative
 voice-options interface. No account restrictions are bypassed.
 
-## How it works
+## Direct narration
+
+The direct option sends the normal chat request with `output_modality: "voice"`
+and retrieves the finished message's MP3 over the existing paired connection:
+`GET /api/voice/tts-stream?message_id=…`. Only a 404 retries `/voice/tts-stream`.
+This follows the [official Linux client](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/linux/src/musegadget/link_client.py).
+It needs no separate account token export, phone, PC, file-generation prompt or
+VM speech helper. It still uses the Muse account allowance and Internet access.
+
+The background downloader uses a 256 KiB Core2 transfer buffer with bounded
+backpressure. The Module stores and decodes the MP3; verified HTTP completion,
+an end-to-end transfer hash and successful complete decoding are required before
+speaking. The direct route allows one retry, with the same response message ID.
+Each assistant message retains its own full text and audio cache. The current
+text limit is 8 KiB per message and the audio bound is 32 MiB. A voice response
+without readable text produces an explicit error rather than silently losing
+the reader. Native pronunciation follows Muse; the local normalization rules
+continue to apply to Piper and the prepared Helio/Aria clips.
+
+Full buffering prevents network gaps during narration, but still adds a wait
+proportional to clip length and the Core2-to-Module transfer rate. It is not a
+promise of immediate playback or a sustained UI frame rate.
+
+## Prepared Helio / Aria narration
 
 Muse writes the exact response script and launches `tools/muse_vm_tts_job.py`
 using its existing built-in speech facility. Core2 downloads the complete MP3 through its existing authenticated native file
