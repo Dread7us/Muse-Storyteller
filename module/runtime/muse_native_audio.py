@@ -68,7 +68,9 @@ class Store:
     if folder.is_symlink() or folder.parent.is_symlink() or mp3.is_symlink():continue
     if (folder/'complete.json').exists() or (folder/'invalid.json').exists():continue
     manifest=folder/'transfer.json'
-    if manifest.exists() and json.loads(manifest.read_text()).get('source_sha256')!=signature:continue
+    if not manifest.exists():continue
+    record=json.loads(manifest.read_text())
+    if record.get('source_sha256')!=signature or record.get('transport_integrity')!=1:continue
     size=mp3.stat().st_size
     if 0<size<=MAX_AUDIO:candidates.append((size,mp3))
    except (OSError,ValueError,TypeError):continue
@@ -80,6 +82,7 @@ class Store:
    item=self.items.get(key)
    if op=='begin':
     text=data.get('text')
+    verified=data.get('_transport_verified') is True
     if not isinstance(text,str) or not text.strip() or len(text.encode())>8192 or '\x00' in text:raise NativeAudioError('Native speech needs its original script')
     item=item or self._load(key,text)
     prefix=None;force_fresh=False
@@ -102,9 +105,9 @@ class Store:
      if not old.done:old.abort()
      shutil.rmtree(old.folder)
     prefix=prefix or (None if force_fresh else self._partial(key,text))
-    item=Item(self.root,key,text,session);self.items[key]=item
+    item=Item(self.root,key,text,session);self.items[key]=item;item.integrity=verified
     item.prefix_origin=prefix
-    (item.folder/'transfer.json').write_text(json.dumps({'source_sha256':hashlib.sha256(text.encode()).hexdigest()}))
+    (item.folder/'transfer.json').write_text(json.dumps({'source_sha256':hashlib.sha256(text.encode()).hexdigest(),'transport_integrity':int(verified)}))
     if prefix:
      try:
       with prefix.open('rb') as old:
@@ -117,6 +120,7 @@ class Store:
     if self.warming is None:self.warming=self.pool.submit(self.warm)
     return {'received':item.received,'complete':False,'sha256':item.digest.hexdigest()}
    if item is None or item.session!=session:raise NativeAudioError('Stale native audio transfer')
+   if getattr(item,'integrity',False) and data.get('_transport_verified') is not True:raise NativeAudioError('Native transfer requires verified requests')
    if op=='abort':
     if not item.done:item.abort()
     return {'received':item.received}
@@ -128,6 +132,8 @@ class Store:
     if type(offset) is not int or offset<0 or not isinstance(encoded,str) or len(encoded)>11000:raise NativeAudioError('Invalid native audio block')
     try:raw=base64.b64decode(encoded,validate=True)
     except ValueError:raise NativeAudioError('Invalid native audio encoding')
+    if 'bytes' in data or 'sha256' in data:
+     if data.get('bytes')!=len(raw) or data.get('sha256')!=hashlib.sha256(raw).hexdigest():raise NativeAudioError('Native audio block integrity check failed')
     if shutil.disk_usage(self.root).free<64*1024*1024:raise NativeAudioError('Native audio cache storage is low')
     if not raw or len(raw)>8192 or offset+len(raw)>MAX_AUDIO:raise NativeAudioError('Native audio exceeds cache bound')
     if offset<item.received and offset+len(raw)<=item.received:
@@ -144,9 +150,10 @@ class Store:
      if getattr(item,'prefix_origin',None):(item.prefix_origin.parent/'invalid.json').write_text('{"reason":"integrity"}')
      item.abort();raise NativeAudioError('Native audio integrity check failed')
     item.file.close();item.decoder.stdin.close();item.decoder.wait(timeout=8)
+    if item.mp3.stat().st_size!=item.received or hashlib.sha256(item.mp3.read_bytes()).hexdigest()!=data.get('sha256'):item.error='Native cache write integrity failed';raise NativeAudioError(item.error)
     if item.decoder.returncode or item.size()<320: item.error='Native audio decoding failed';raise NativeAudioError(item.error)
     item.done=True
-    meta={'source_sha256':hashlib.sha256(item.text.encode()).hexdigest(),'audio_bytes':item.received,'audio_sha256':item.digest.hexdigest(),'pcm_bytes':item.size()}
+    meta={'source_sha256':hashlib.sha256(item.text.encode()).hexdigest(),'audio_bytes':item.received,'audio_sha256':item.digest.hexdigest(),'pcm_bytes':item.size(),'transport_integrity':int(getattr(item,'integrity',False))}
     target=item.folder/'complete.json';temp=target.with_suffix('.pending');temp.write_text(json.dumps(meta));temp.replace(target)
     return {'received':item.received}
    raise NativeAudioError('Unknown native audio operation')
@@ -168,6 +175,7 @@ class Store:
     item.folder,item.mp3,item.pcm=folder,mp3,pcm
     item.received,item.done,item.error=meta['audio_bytes'],True,None
     item.digest=digest
+    item.integrity=meta.get('transport_integrity')==1
     item.file=None;item.decoder=None
     self.items[key]=item
     return item

@@ -6,6 +6,7 @@ except ImportError:pass
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'module/runtime'))
 import muse_native_audio as native
 import muse_playback_control as control
+from muse_cloud_worker import checked_payload
 with patch.dict(sys.modules,{'muse_zmq':types.SimpleNamespace()}):
  import muse_voice_backend as adapter
 class Interrupted(Exception):pass
@@ -34,7 +35,7 @@ class TransferRetries(unittest.TestCase):
     self.file=self.mp3.open('wb');self.decoder=Decoder();self.received=0;self.digest=hashlib.sha256();self.done=False;self.error=None
   self.patch=patch.object(native,'Item',Item);self.patch.start()
   self.key='1234567890abcdef12345678';self.request('begin',text='A complete reply.')
- def request(self,op,**data):return self.store.request(dict(op=op,key=self.key,**data),'12345678')
+ def request(self,op,**data):return self.store.request(dict(op=op,key=self.key,_transport_verified=True,**data),'12345678')
  def tearDown(self):
   for item in self.store.items.values():
    if not item.done:item.abort()
@@ -57,15 +58,25 @@ class TransferRetries(unittest.TestCase):
   self.request('chunk',offset=0,audio=base64.b64encode(b'abc').decode());self.request('abort')
   fresh=native.Store(self.temp.name);fresh.warm=lambda:None
   try:
-   result=fresh.request(dict(op='begin',key=self.key,text='A complete reply.'),'87654321')
+   result=fresh.request(dict(op='begin',key=self.key,text='A complete reply.',_transport_verified=True),'87654321')
    self.assertEqual(result['received'],3);self.assertFalse(result['complete'])
-   with self.assertRaises(native.NativeAudioError):fresh.request(dict(op='end',key=self.key,bytes=3,sha256=hashlib.sha256(b'bad').hexdigest()),'87654321')
-   result=fresh.request(dict(op='begin',key=self.key,text='A complete reply.'),'87654321')
+   with self.assertRaises(native.NativeAudioError):fresh.request(dict(op='end',key=self.key,bytes=3,sha256=hashlib.sha256(b'bad').hexdigest(),_transport_verified=True),'87654321')
+   result=fresh.request(dict(op='begin',key=self.key,text='A complete reply.',_transport_verified=True),'87654321')
    self.assertEqual(result['received'],0)
   finally:
    for item in fresh.items.values():
     if not item.done:item.abort()
    fresh.pool.shutdown(wait=True)
+ def test_shortened_valid_base64_is_rejected_before_cache_changes(self):
+  with self.assertRaises(native.NativeAudioError):self.request('chunk',offset=0,audio=base64.b64encode(b'ab').decode(),bytes=3,sha256=hashlib.sha256(b'abc').hexdigest())
+  self.assertEqual(self.store.items[self.key].received,0);self.assertEqual(self.store.items[self.key].mp3.stat().st_size,0)
+ def test_changed_payload_is_rejected_before_its_operation_runs(self):
+  payload=json.dumps(dict(op='chunk',key=self.key,offset=0,audio=base64.b64encode(b'abc').decode()))
+  packet=dict(op='packet',payload=payload,sha256=hashlib.sha256(payload.encode()).hexdigest())
+  self.assertTrue(checked_payload(packet)['_transport_verified'])
+  packet['payload']=payload.replace('YWJj','YWI=')
+  with self.assertRaises(native.NativeAudioError):checked_payload(packet)
+  self.assertFalse(checked_payload(dict(op='begin',_transport_verified=True)).get('_transport_verified',False))
 class CompleteCache(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.directory=Path(self.temp.name);self.text='The blue lantern glowed. The keeper came home.';self.key='1234567890abcdef12345678'

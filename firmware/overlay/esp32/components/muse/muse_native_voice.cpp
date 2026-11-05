@@ -97,6 +97,7 @@ static size_t rpc_received;
 static bool rpc_complete;
 static char rpc_hash[65];
 static uint32_t rpc_serial;
+static bool hex_digest(const uint8_t *data,size_t length,char out[65]);
 bool muse_native_voice_reply(const cJSON *root,const char *session){
     const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root,"request_id"));
     const cJSON *data=cJSON_GetObjectItemCaseSensitive(root,"data");
@@ -121,13 +122,22 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
 static bool rpc_once(cJSON *data,bool cleanup){
     char owner[9];muse_module_llm_session(owner);
     if(!owner[0]||(!cleanup&&stopped())){cJSON_Delete(data);return false;}
-    cJSON *root=cJSON_CreateObject();if(!root||!data){cJSON_Delete(root);cJSON_Delete(data);return false;}
+    // Preserve the exact serialized payload through the UART parser. A valid
+    // JSON frame alone cannot detect dropped characters inside a base64 string.
+    char *payload=cJSON_PrintUnformatted(data);cJSON_Delete(data);char payload_hash[65];
+    if(!payload || !hex_digest((const uint8_t *)payload,strlen(payload),payload_hash)){cJSON_free(payload);return false;}
+    data=cJSON_CreateObject();
+    if(!data){cJSON_free(payload);return false;}
+    cJSON_AddStringToObject(data,"op","packet");
+    cJSON_AddItemToObject(data,"payload",cJSON_CreateStringReference(payload));
+    cJSON_AddStringToObject(data,"sha256",payload_hash);
+    cJSON *root=cJSON_CreateObject();if(!root||!data){cJSON_Delete(root);cJSON_Delete(data);cJSON_free(payload);return false;}
     char id[64];snprintf(id,sizeof(id),"cloud-%08lx-%08lx",(unsigned long)esp_random(),(unsigned long)++rpc_serial);
     cJSON_AddStringToObject(root,"request_id",id);cJSON_AddStringToObject(root,"work_id","musevoice");
     cJSON_AddStringToObject(root,"object","musevoice.v1");cJSON_AddStringToObject(root,"action","cloud");
     cJSON_AddStringToObject(data,"session",owner);cJSON_AddNumberToObject(data,"generation",0);
     cJSON_AddItemToObject(root,"data",data);
-    char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);if(!json)return false;
+    char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);cJSON_free(payload);if(!json)return false;
     portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
     bool sent=muse_module_llm_send_line(json);cJSON_free(json);
     int64_t until=now()+10000000;bool done=false,ok=false;
@@ -140,10 +150,15 @@ static bool rpc_once(cJSON *data,bool cleanup){
     return done&&ok;
 }
 static bool rpc(cJSON *data,bool cleanup=false){
-    bool ok=false;
+    bool ok=false;size_t expected_received=0;
+    const char *op=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"op"));
+    if(op&&!strcmp(op,"chunk"))expected_received=(size_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"offset"))+(size_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"bytes"));
     for(unsigned attempt=0;attempt<(cleanup?1U:3U)&&(!stopped()||cleanup);attempt++){
         cJSON *copy=cJSON_Duplicate(data,true);if(!copy)break;
-        if(rpc_once(copy,cleanup)){ok=true;break;}
+        if(rpc_once(copy,cleanup)){
+            portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
+            if(!expected_received || acknowledged==expected_received){ok=true;break;}
+        }
         if(!cleanup)pause_ms(200*(attempt+1));
     }
     cJSON_Delete(data);return ok;
@@ -220,7 +235,11 @@ static void worker(void *){
             size_t sent=0;while(sent<count){size_t portion=count-sent>4096?4096:count-sent;
             size_t written=0;if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block+sent,portion)){ready=false;break;}encoded[written]=0;
             cJSON *d=operation("chunk");cJSON_AddNumberToObject(d,"offset",offset+sent);cJSON_AddStringToObject(d,"audio",encoded);
-            if(!rpc(d)){ready=false;break;}sent+=portion;
+            char chunk_hash[65];if(!hex_digest(block+sent,portion,chunk_hash)){cJSON_Delete(d);ready=false;break;}
+            cJSON_AddNumberToObject(d,"bytes",portion);cJSON_AddStringToObject(d,"sha256",chunk_hash);
+            if(!rpc(d)){ready=false;break;}
+            portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
+            if(acknowledged!=offset+sent+portion){ready=false;break;}sent+=portion;
             }if(!ready)break;
             if(!resume && psa_hash_update(&digest,block,count)!=PSA_SUCCESS){ready=false;break;}offset+=count;buffered(offset,audio_bytes);
             // Cache exists before speaking is queued; decoder can grow in parallel.

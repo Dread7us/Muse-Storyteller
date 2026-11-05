@@ -45,7 +45,15 @@ static char s_cloud_session[9];
 bool muse_module_llm_send_line(const char *json){
     if(!s_tx_mutex || !json)return false;
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);size_t n=strlen(json);
-    bool ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json,n)==(int)n && uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
+    bool ok=true;
+    // The Module's UART has no hardware flow control. Give its receive path
+    // breathing room between bounded bursts of a large JSON request.
+    for(size_t at=0;at<n && ok;){
+        size_t count=n-at;if(n>1024 && count>256)count=256;
+        ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json+at,count)==(int)count;at+=count;
+        if(n>1024 && ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
+    }
+    if(ok)ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
     xSemaphoreGive(s_tx_mutex);return ok;
 }
 void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
