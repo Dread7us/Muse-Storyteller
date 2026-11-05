@@ -231,3 +231,65 @@ continuous complete audio when analysis is unavailable.
 
 The final Linux source suite passed all 43 tests. Private job files, screenshots,
 device reports and archive backups are not part of the public repository.
+
+## Edition 0.3.4 startup and direct-voice checks
+
+The cold-start failure was traced to the vendor audio router rejecting an
+idempotent stop while its handlers were still registering. Startup retries that
+specific temporary rejection within a bounded window; Ready still requires the
+actual microphone capture and Whisper decoder warm-up. Repeated reference
+Module cold boots reached readiness on the first service attempt, with roughly
+44–49 seconds from reboot to warmed readiness. Runtime stop retries remain short.
+
+The factory startup script now invokes a once-per-boot wrapper on the reference
+installation. Its atomic lock was observed after a real cold boot; a repeated
+invocation was suppressed and the factory audio asset was unchanged. A separate
+Linux concurrency test also verifies twelve simultaneous calls admit one cue.
+
+The direct Muse option uses the SDK's message-addressed speech endpoint through
+the existing paired connection. Real requests returned HTTP 200 and native MP3
+without asking an agent to create files or run a speech helper. Local Piper also
+completed a normal recognized-text question/reply path. Those development requests
+injected recognized text; they do not constitute a new physical microphone
+accuracy benchmark.
+
+A roughly 122-second native story verified all 973,056 MP3 bytes and played all
+3,892,224 decoded PCM bytes in one continuous playback call. All 301 scheduled
+words were retained, with the final highlight reaching the final script offset.
+Its timing used complete-audio estimates; this is not a claim of exact alignment.
+
+Protected 8 KiB direct transfers, removal of a Core2 base64 round trip, shorter
+missing-acknowledgement retries and a two-second optional-timing budget reduced
+clip preparation. Approximately 0.97 MB clips took 71.5 seconds with the earlier
+4 KiB path and 44.0 seconds with the optimized 8 KiB path. The latter story began
+speaking 89.1 seconds after request submission. These were separate generations
+from the same 300-word prompt, not an identical-file controlled benchmark. Full
+buffering and answer generation still impose substantial latency on long stories.
+
+A higher 921600-baud trial lost transfer acknowledgements and was rejected. The
+reference installation was returned to its proven matched 460800-baud setting;
+the public profile retains the factory 115200-baud default. Both ends must match.
+No reliability claim is made for the rejected faster configuration.
+
+The actual vendor framing extractor recovered at 222 interrupted JSON/binary
+positions using the startup resynchronization procedure. Portable checks cover
+both 4 KiB and 8 KiB header/body corruption, optional timing delays and complete
+playback retention. The 51-case suite passed locally with ten Windows platform
+skips, and the corresponding Linux source workflow passed. The reference
+firmware compiled fully and passed application-only write/digest and healthy-UI
+boot checks. This remains a reference build, distinct from a full cold build of
+the sanitized public installation profile.
+
+After returning to the stable configuration, a fresh two-sentence direct Muse
+reply began speaking in 9.165 seconds, verified and played its complete 52,800-byte
+MP3, and reached the final reader word. Cached Restart began in 0.248 seconds
+after completion and 0.245 seconds after Stop, resetting to the opening word.
+Module-acknowledged Pause/Resume, Settings and reader resize passed during audio.
+These are individual observations, not worst-case latency guarantees.
+
+The final Core2 retained direct Muse voice at 50%, reported no speech error and
+had advancing UI frames. All 310 original pre-repair archive messages remained
+present. The tablet and Module stayed connected to the pre-existing ADB server,
+and the SuperDisplay Windows service remained running. No ADB restart, tablet
+routing change or NVS erase was performed. Private clips, device reports,
+account state, archive backups and rejected candidate binaries remain unpublished.
