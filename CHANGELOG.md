@@ -10,6 +10,9 @@
 - Transfer protected native requests in an ASCII envelope so punctuation, Unicode and unmatched code braces cannot confuse the vendor's brace-counting UART extractor.
 - Send audio blocks with StackFlow RAW binary framing to avoid base64 on the wire; verify both block metadata and audio before admitting bytes.
 - Keep optional alignment on one low-priority CPU thread, preserving time for microphone, UART and controls.
+- Use bounded 8 KiB direct audio blocks without a local base64 round trip; retry missing block acknowledgements promptly.
+- Limit the extra wait for optional word timing to two seconds after complete audio is ready.
+- Re-synchronize interrupted JSON/binary framing when Core2 starts, before opening its voice session.
 - Buffer and verify each finished message before playback; continue receiving subsequent messages while cached audio plays.
 - Retain cached playback across a connection drop and keep Pause/Resume, Stop, Restart, volume and reader controls in the existing playback path.
 

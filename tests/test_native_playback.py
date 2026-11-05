@@ -23,17 +23,18 @@ class TransferRetries(unittest.TestCase):
  def test_binary_body_and_header_are_both_required_for_admission(self):
   with patch.dict(sys.modules,{'fcntl':types.SimpleNamespace(),'muse_zmq':types.SimpleNamespace()}):
    import muse_voice_bridge as bridge
-  body=bytes(range(256))*16;key='1234567890abcdef12345678';digest=hashlib.sha256(body).hexdigest()
-  info=dict(session='12345678',generation=0,key=key,offset=4096,bytes=len(body),sha256=digest)
-  info['packet_sha256']=hashlib.sha256(('%s:%d:%d:%s'%(key,4096,len(body),digest)).encode()).hexdigest()
-  request=dict(RAW=len(body),request_id='cloud-binary-test',work_id='musevoice',object='musevoice.v1',action='cloud',raw_info=info,data=base64.b64encode(body).decode())
-  route='ipc:///tmp/musevoice/client-'+'1'*24+'.sock'
-  parsed=bridge.parse_request(b'cloud',adapter.pack_pair(route.encode(),adapter.encode(request)),route)
-  decoded=checked_payload(parsed['data']);self.assertTrue(decoded['_transport_verified']);self.assertEqual(decoded['op'],'chunk')
-  changed=dict(parsed['data'],offset=4097)
-  with self.assertRaises(native.NativeAudioError):checked_payload(changed)
-  changed=dict(parsed['data'],audio=base64.b64encode(body[:-1]+b'!').decode())
-  with self.assertRaises(native.NativeAudioError):checked_payload(changed)
+  for factor in (16,32):
+   body=bytes(range(256))*factor;key='1234567890abcdef12345678';digest=hashlib.sha256(body).hexdigest()
+   info=dict(session='12345678',generation=0,key=key,offset=4096,bytes=len(body),sha256=digest)
+   info['packet_sha256']=hashlib.sha256(('%s:%d:%d:%s'%(key,4096,len(body),digest)).encode()).hexdigest()
+   request=dict(RAW=len(body),request_id='cloud-binary-test',work_id='musevoice',object='musevoice.v1',action='cloud',raw_info=info,data=base64.b64encode(body).decode())
+   route='ipc:///tmp/musevoice/client-'+'1'*24+'.sock'
+   parsed=bridge.parse_request(b'cloud',adapter.pack_pair(route.encode(),adapter.encode(request)),route)
+   decoded=checked_payload(parsed['data']);self.assertTrue(decoded['_transport_verified']);self.assertEqual(decoded['op'],'chunk')
+   changed=dict(parsed['data'],offset=4097)
+   with self.assertRaises(native.NativeAudioError):checked_payload(changed)
+   changed=dict(parsed['data'],audio=base64.b64encode(body[:-1]+b'!').decode())
+   with self.assertRaises(native.NativeAudioError):checked_payload(changed)
  def test_ascii_envelope_preserves_unicode_quotes_and_unmatched_code_braces(self):
   payload=json.dumps({'op':'begin','text':'A lantern\u2014and "quoted" words.\nAn unfinished code block: {'},ensure_ascii=False)
   packet=dict(op='packet',payload_b64=base64.b64encode(payload.encode()).decode(),sha256=hashlib.sha256(payload.encode()).hexdigest())
@@ -130,6 +131,13 @@ class CompleteCache(unittest.TestCase):
   item=self.store._load(self.key,self.text);item.timing_future=Future();item.timing_future.set_exception(RuntimeError('Analysis failed'))
   player=Player();result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
   self.assertEqual(result['played_pcm_bytes'],len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
+ def test_pending_timing_cannot_delay_complete_audio_for_fifteen_seconds(self):
+  item=self.store._load(self.key,self.text);item.timing_future=Future();ticks=[]
+  def clock():ticks.append(1);return float(len(ticks))
+  player=Player()
+  with patch.object(native.time,'monotonic',side_effect=clock),patch.object(native.time,'sleep'):
+   result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
+  self.assertLessEqual(len(ticks),6);self.assertTrue(result['complete']);self.assertEqual(sum(player.parts),len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
  def test_optional_cache_and_report_writes_cannot_fail_completed_audio(self):
   original=Path.write_text
   def full(path,*args,**kwargs):

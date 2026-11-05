@@ -70,6 +70,27 @@ bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t len
     if(ok)ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
     xSemaphoreGive(s_tx_mutex);return ok;
 }
+static void recover_uart_framing(void){
+    // A Core2 reset can interrupt either a JSON request or our bounded RAW
+    // body. Drain at most one 8192-byte body, then terminate the vendor's
+    // brace accumulator. Invalid old audio still fails its mandatory hash.
+    // Run only when this Core2 task starts, before claiming a voice session.
+    static const uint8_t zeros[512]={0};
+    xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
+    // A truncated RAW *header* may enter body mode only when first closed;
+    // the second pass drains that body too.
+    for(unsigned pass=0;pass<2;pass++){
+        for(unsigned i=0;i<16;i++){
+            uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,zeros,sizeof(zeros));
+            uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(1);
+        }
+        for(unsigned i=0;i<3;i++){
+            uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"}\n",2);
+            uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    xSemaphoreGive(s_tx_mutex);
+}
 
 static uint32_t s_play_generation, s_cancel_generation, s_record_epoch;
 static bool s_cancel_requested, s_cancel_valid;
@@ -507,6 +528,7 @@ static void runtime_task(void *unused)
         return;
     }
     muse_llm_framer_init(&r.framer, frame, MUSE_LLM_FRAME_MAX + 1);
+    recover_uart_framing();
     for (;;) {
         int64_t now = esp_timer_get_time();
         portENTER_CRITICAL(&s_lock);s_diag_op=r.operation;s_diag_at=now;portEXIT_CRITICAL(&s_lock);

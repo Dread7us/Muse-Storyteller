@@ -295,7 +295,7 @@ class Store:
    prepared=getattr(item,'timing_future',None)
    try:
     if prepared is not None:
-     timing_deadline=time.monotonic()+15
+     timing_deadline=time.monotonic()+2
      while not prepared.done():
       check_cancel(cancel)
       if time.monotonic()>timing_deadline:raise NativeAudioError('Word timing is taking too long')

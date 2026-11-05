@@ -98,6 +98,8 @@ static size_t rpc_received;
 static bool rpc_complete;
 static char rpc_hash[65];
 static uint32_t rpc_serial;
+static int64_t profile_wire_us,profile_ack_us;
+static unsigned profile_packets;
 static bool hex_digest(const uint8_t *data,size_t length,char out[65]);
 bool muse_native_voice_reply(const cJSON *root,const char *session){
     const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root,"request_id"));
@@ -159,36 +161,59 @@ static bool rpc_once(cJSON *data,bool cleanup){
     portENTER_CRITICAL(&lock);rpc_waiting=false;portEXIT_CRITICAL(&lock);
     return done&&ok;
 }
-static bool rpc_raw_once(cJSON *data){
+static bool rpc_raw_body(const char *key,const uint8_t *raw,size_t decoded,size_t offset,const char *hash){
     char owner[9];muse_module_llm_session(owner);
-    const char *key=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"key"));
-    const char *audio=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"audio"));
-    const char *expected=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"sha256"));
-    double bytes=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"bytes"));
-    double offset=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"offset"));
-    if(!owner[0]||stopped()||!key||strlen(key)!=24||!audio||strlen(audio)>11000||!expected||strlen(expected)!=64||!(bytes>=1&&bytes<=8192)||!(offset>=0&&offset<=32*1024*1024)||bytes!=(size_t)bytes||offset!=(size_t)offset){cJSON_Delete(data);return false;}
-    uint8_t *raw=(uint8_t *)malloc((size_t)bytes);size_t decoded=0;char hash[65],signature[65],canonical[150];
-    if(!raw||mbedtls_base64_decode(raw,(size_t)bytes,&decoded,(const uint8_t *)audio,strlen(audio))||decoded!=(size_t)bytes||!hex_digest(raw,decoded,hash)||strcmp(hash,expected)){free(raw);cJSON_Delete(data);return false;}
+    if(!owner[0]||stopped())return false;
+    char signature[65],canonical[150];
     snprintf(canonical,sizeof(canonical),"%s:%u:%u:%s",key,(unsigned)offset,(unsigned)decoded,hash);
-    if(!hex_digest((const uint8_t *)canonical,strlen(canonical),signature)){free(raw);cJSON_Delete(data);return false;}
+    if(!hex_digest((const uint8_t *)canonical,strlen(canonical),signature)){return false;}
     cJSON *root=cJSON_CreateObject(),*info=cJSON_CreateObject();
-    if(!root||!info){cJSON_Delete(root);cJSON_Delete(info);free(raw);cJSON_Delete(data);return false;}
+    if(!root||!info){cJSON_Delete(root);cJSON_Delete(info);return false;}
     // RAW must be the first JSON key for the stock StackFlow extractor.
     cJSON_AddNumberToObject(root,"RAW",decoded);
     char id[64];snprintf(id,sizeof(id),"cloud-%08lx-%08lx",(unsigned long)esp_random(),(unsigned long)++rpc_serial);
     cJSON_AddStringToObject(root,"request_id",id);cJSON_AddStringToObject(root,"work_id","musevoice");cJSON_AddStringToObject(root,"object","musevoice.v1");cJSON_AddStringToObject(root,"action","cloud");
     cJSON_AddStringToObject(info,"session",owner);cJSON_AddNumberToObject(info,"generation",0);cJSON_AddStringToObject(info,"key",key);cJSON_AddNumberToObject(info,"offset",offset);cJSON_AddNumberToObject(info,"bytes",decoded);cJSON_AddStringToObject(info,"sha256",hash);cJSON_AddStringToObject(info,"packet_sha256",signature);cJSON_AddItemToObject(root,"raw_info",info);
-    char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);cJSON_Delete(data);
-    if(!json){free(raw);return false;}
+    char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);
+    if(!json)return false;
     portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
-    bool sent=muse_module_llm_send_binary(json,raw,decoded);cJSON_free(json);free(raw);
-    int64_t until=now()+10000000;bool done=false,ok=false;
+    int64_t wire_started=now();
+    bool sent=muse_module_llm_send_binary(json,raw,decoded);cJSON_free(json);
+    int64_t ack_started=now();profile_wire_us+=ack_started-wire_started;profile_packets++;
+    int64_t until=now()+3000000;bool done=false,ok=false;
     while(sent&&now()<until&&!stopped()){
         portENTER_CRITICAL(&lock);done=rpc_done;ok=rpc_ok;portEXIT_CRITICAL(&lock);
         if(done){break;}
         pause_ms(2);
     }
+    profile_ack_us+=now()-ack_started;
     portENTER_CRITICAL(&lock);rpc_waiting=false;portEXIT_CRITICAL(&lock);return done&&ok;
+}
+static bool rpc_raw_once(cJSON *data){
+    const char *key=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"key"));
+    const char *audio=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"audio"));
+    const char *expected=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"sha256"));
+    double bytes=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"bytes"));
+    double offset=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"offset"));
+    if(!key||strlen(key)!=24||!audio||strlen(audio)>11000||!expected||strlen(expected)!=64||!(bytes>=1&&bytes<=8192)||!(offset>=0&&offset<=32*1024*1024)||bytes!=(size_t)bytes||offset!=(size_t)offset){cJSON_Delete(data);return false;}
+    uint8_t *raw=(uint8_t *)malloc((size_t)bytes);size_t decoded=0;char hash[65];
+    bool okay=raw&&!mbedtls_base64_decode(raw,(size_t)bytes,&decoded,(const uint8_t *)audio,strlen(audio))&&decoded==(size_t)bytes&&hex_digest(raw,decoded,hash)&&!strcmp(hash,expected);
+    if(okay)okay=rpc_raw_body(key,raw,decoded,(size_t)offset,hash);
+    free(raw);cJSON_Delete(data);return okay;
+}
+static bool rpc_binary_block(const uint8_t *raw,size_t bytes,size_t offset){
+    char hash[65];
+    if(!raw||!bytes||bytes>8192||offset+bytes>32*1024*1024||!hex_digest(raw,bytes,hash))return false;
+    for(unsigned attempt=0;attempt<3&&!stopped();attempt++){
+        if(rpc_raw_body(job,raw,bytes,offset,hash)){
+            portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
+            if(acknowledged==offset+bytes)return true;
+        }
+        portENTER_CRITICAL(&lock);int code=rpc_error;size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
+        printf("@native_rpc {\"op\":\"chunk\",\"attempt\":%u,\"code\":%d,\"received\":%u,\"expected\":%u}\n",attempt+1,code,(unsigned)acknowledged,(unsigned)(offset+bytes));fflush(stdout);
+        if(attempt<2)pause_ms(100*(attempt+1));
+    }
+    return false;
 }
 static bool rpc(cJSON *data,bool cleanup=false){
     bool ok=false;size_t expected_received=0;
@@ -355,6 +380,8 @@ static void worker(void *){
  * required before the existing disk-backed player is allowed to speak. */
 static constexpr size_t DIRECT_CAP=256*1024;
 EXT_RAM_BSS_ATTR static uint8_t direct_ring[DIRECT_CAP];
+// The single job owner reuses this bounded PSRAM block, outside its task stack.
+EXT_RAM_BSS_ATTR static uint8_t direct_block[8192];
 static size_t direct_read,direct_write,direct_used;
 static int direct_status;
 static bool direct_done,direct_failed;
@@ -386,6 +413,7 @@ static void direct_cb(void *context,int status,const uint8_t *data,size_t length
     portEXIT_CRITICAL(&lock);
 }
 static bool direct_transfer(bool legacy){
+    profile_wire_us=profile_ack_us=0;profile_packets=0;int64_t source_wait_us=0;
     char encoded_id[400],path[512];size_t pos=0;
     for(const unsigned char *p=(const unsigned char *)direct_message;*p;p++){
         unsigned char c=*p;
@@ -410,7 +438,7 @@ static bool direct_transfer(bool legacy){
     if(!request)return false;
     psa_hash_operation_t digest=PSA_HASH_OPERATION_INIT;
     bool okay=psa_hash_setup(&digest,PSA_ALG_SHA_256)==PSA_SUCCESS,finished=false;
-    uint8_t block[4096];char encoded[5500];size_t offset=0;int status=0;
+    auto &block=direct_block;size_t offset=0;int status=0;
     int64_t deadline=now()+360000000,first=0;
     phase(2);buffered(0,0);
     while(okay&&!stopped()&&now()<deadline){
@@ -426,13 +454,10 @@ static bool direct_transfer(bool legacy){
         if(count){
             if(!first){first=now();printf("@native_direct {\"event\":\"first_audio\",\"ms\":%u}\n",(unsigned)((first-started_us)/1000));fflush(stdout);}
             if(offset+count>32*1024*1024||psa_hash_update(&digest,block,count)!=PSA_SUCCESS){okay=false;break;}
-            size_t written=0;char hash[65];
-            if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block,count)||!hex_digest(block,count,hash)){okay=false;break;}encoded[written]=0;
-            cJSON *chunk=operation("chunk");cJSON_AddNumberToObject(chunk,"offset",offset);cJSON_AddNumberToObject(chunk,"bytes",count);cJSON_AddStringToObject(chunk,"audio",encoded);cJSON_AddStringToObject(chunk,"sha256",hash);
-            if(!rpc(chunk)){okay=false;break;}
+            if(!rpc_binary_block(block,count,offset)){okay=false;break;}
             offset+=count;buffered(offset,0);
         }else if(finished)break;
-        else pause_ms(5);
+        else{int64_t waiting=now();pause_ms(5);source_wait_us+=now()-waiting;}
     }
     portENTER_CRITICAL(&lock);++direct_token;portEXIT_CRITICAL(&lock);
     if(!finished||!okay||stopped())muse_link_req_cancel(request);
@@ -445,7 +470,7 @@ static bool direct_transfer(bool legacy){
     psa_hash_abort(&digest);
     if(okay){buffered(offset,offset);phase(4);state.store(1);}
     else rpc(operation("abort"),true);
-    printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"max_frame\":%u,\"ms\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)direct_max_frame,(unsigned)((now()-started_us)/1000));fflush(stdout);
+    printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"max_frame\":%u,\"ms\":%u,\"wire_ms\":%u,\"ack_ms\":%u,\"source_wait_ms\":%u,\"packets\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)direct_max_frame,(unsigned)((now()-started_us)/1000),(unsigned)(profile_wire_us/1000),(unsigned)(profile_ack_us/1000),(unsigned)(source_wait_us/1000),profile_packets);fflush(stdout);
     // Match the official client: only a 404 selects the legacy endpoint.
     return okay;
 }

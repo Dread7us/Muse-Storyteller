@@ -51,7 +51,9 @@ Audio blocks use the vendor's `RAW` header + exact binary body + framing newline
 avoiding base64 expansion over UART. The router converts the body locally before
 dispatch. Each block's key, offset, size and audio digest are protected by a
 header checksum; the decoded body is checked separately, then the complete MP3
-is verified at EOF. Text/control packets use the protected ASCII envelope.
+is verified at EOF. Direct narration sends bounded 8 KiB blocks from a reusable
+PSRAM buffer, without encoding and decoding those bytes again on Core2. A missing
+block acknowledgement is retried within a bounded three-second window. Text/control packets use the protected ASCII envelope.
 This requires the matching Core2 firmware and Module bridge. Optional timing
 runs on one low-priority CPU thread so it cannot monopolize both Module cores.
 
@@ -180,7 +182,7 @@ Recovery cannot power an unplugged Module or repair a permanent upstream outage.
 Stopping playback does not launch new speech automatically.
 
 Background alignment and timing-cache persistence are optional. If either fails,
-or background analysis adds more than 15 seconds after audio verification, the
+or background analysis adds more than 2 seconds after audio verification, the
 device uses complete-audio word estimates and keeps valid narration. Estimated
 highlighting is not exact forced alignment. Complete-audio integrity and playback
 completion checks remain mandatory.
