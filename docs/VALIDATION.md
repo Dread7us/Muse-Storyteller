@@ -211,9 +211,23 @@ without starting Piper. Its local Piper-result fingerprint stayed unchanged.
 An actual screen capture showed the persistent **Voice error – Restart** header
 after the transient error caption, rather than a misleading Ready label.
 
+The original failed reply then resumed from its protected 229,376-byte prefix.
+It verified all 662,400 MP3 bytes and played every one of its 5,299,200 PCM bytes
+across two bounded calls (165.6 seconds of audio). All 462 scheduled words reached
+the final original-script offset. No new answer or synthesis was requested for
+that recovery. On the final firmware, cached Restart entered Speaking in 0.481
+seconds from completion and 0.450 seconds after Stop. Pause/Resume, Settings and
+reader resizing passed during playback; the final view was restored to Max.
+All 293 messages in the pre-repair archive backup remained present, Helio stayed
+selected at 50%, UI frames advanced, and the existing Module/tablet connections
+and SuperDisplay service remained healthy.
+
 Public regression checks cover failed background analysis, optional timing/report
 write failures, shutdown with an incomplete protected prefix, and preservation
 of the original initialization error when cleanup also fails. These checks do
 not claim to repair absent Module power, a permanent provider outage, or every
 possible hardware fault. Exact alignment remains optional; estimates preserve
 continuous complete audio when analysis is unavailable.
+
+The final Linux source suite passed all 43 tests. Private job files, screenshots,
+device reports and archive backups are not part of the public repository.
