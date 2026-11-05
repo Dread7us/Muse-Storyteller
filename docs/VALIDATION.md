@@ -187,3 +187,33 @@ Linux CI passed all 39 tests, including compact output becoming downloadable bef
 synthesis finishes, stalled-encoder timeout, exact payload/block corruption rejection,
 and timing analysis before completion without publishing unverified results.
 Reference Module tests also exercised actual MP3 resume/decoding and volume math.
+
+## Edition 0.3.3 recovery checks
+
+A failed reference job had stopped at 229,376 received bytes while its Muse VM
+already held the complete, hash-verified 662,400-byte MP3. The Module had since
+restarted; the evidence did not establish exactly what caused the original
+interruption. The prior firmware could retain the text but did not automatically
+reopen and resume a failed transfer after reconnecting.
+
+The recovery candidate compiled and passed application-only write/digest and
+healthy-boot checks, retaining 50% volume and the matched serial link. A fresh
+normal 102-word request was deliberately interrupted after 16,384 received bytes
+by restarting only the idle Module speech service. Core2 showed recovery,
+rejoined the service and resumed the same job without another synthesis request.
+It verified all 140,256 MP3 bytes and played all 1,122,048 PCM bytes (35.064 seconds)
+in one call, with highlighting reaching the final byte of all 102 scheduled words.
+One reconnect attempt was needed. The temporary not-ready/busy responses during
+the deliberate restart cleared before playback; they were not playback errors.
+
+A permanent metadata-error fixture failed without an automatic retry loop and
+without starting Piper. Its local Piper-result fingerprint stayed unchanged.
+An actual screen capture showed the persistent **Voice error – Restart** header
+after the transient error caption, rather than a misleading Ready label.
+
+Public regression checks cover failed background analysis, optional timing/report
+write failures, shutdown with an incomplete protected prefix, and preservation
+of the original initialization error when cleanup also fails. These checks do
+not claim to repair absent Module power, a permanent provider outage, or every
+possible hardware fault. Exact alignment remains optional; estimates preserve
+continuous complete audio when analysis is unavailable.

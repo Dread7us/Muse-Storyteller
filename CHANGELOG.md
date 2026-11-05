@@ -1,5 +1,15 @@
 # Release history
 
+## 0.3.3
+
+- Automatically reconnect and resume the same protected native audio job after a temporary Module/service or transfer failure, with at most two recovery attempts.
+- Show recovery and buffering status; keep exhausted voice errors visible instead of returning a misleading Ready label.
+- Stop retries on permanent synthesis/voice-identity errors and on cancellation; never silently switch the selected voice.
+- Keep valid complete audio playing when background timing or optional timing/report cache writes fail.
+- Bound the extra wait for background timing; fall back to complete-audio word estimates when necessary.
+- Release incomplete decoder/analysis work cleanly on service shutdown, preserving protected MP3 prefixes.
+- Preserve the original startup/worker fault when secondary cleanup also fails.
+
 ## 0.3.2
 
 - Protect exact UART requests and audio blocks with checksums and exact receiver byte acknowledgements; retry rejected blocks.

@@ -2650,10 +2650,12 @@ static void update_status(muse_mode_t mode, float now)
     if(native.active && mode==MUSE_MODE_THINKING){
         if(native.phase==7)snprintf(preparing_label,sizeof(preparing_label),"RECOVERING VOICE %u/2",native.recoveries);
         else if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
+        else if(native.phase==2)snprintf(preparing_label,sizeof(preparing_label),"BUFFERING VOICE %uKB",native.received/1024);
         else if(native.phase==3)snprintf(preparing_label,sizeof(preparing_label),"CHECKING AUDIO");
         else snprintf(preparing_label,sizeof(preparing_label),"CREATING VOICE %us",native.elapsed_ms/1000);
         name=preparing_label;
     }
+    if(!native.active && native.phase==5 && mode==MUSE_MODE_IDLE && muse_settings_voice_source()==1 && muse_chat_playback_can_restart())name="VOICE ERROR - RESTART";
     if(playback_status.pause_requested)name=playback_status.paused?"PAUSED":"PAUSING";
     else if(playback_status.paused)name="RESUMING";
     if(muse_memory_recorder_active())name="RECORDING";

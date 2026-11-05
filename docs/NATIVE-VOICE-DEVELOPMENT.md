@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.2 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.3 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -124,3 +124,23 @@ separate connections and are not restarted by this voice path.
 Full buffering improves continuity after speech starts; it is not a promise of
 immediate first playback. A network, timing or transfer failure cannot turn a
 partial download into a successfully completed reply.
+
+## Recovery behavior
+
+Temporary transfer or Module-service failures get up to two automatic reconnect
+attempts. Recovery reopens the same immutable job and discovers the receiver's
+protected prefix; it does not generate another answer or request paid synthesis.
+The display shows **Recovering voice** while rejoining. Corrupt audio is never
+admitted merely because a retry succeeded: complete byte counts and hashes still
+have to match. Permanent synthesis/voice-identity failures stop immediately.
+
+An exhausted failure stays visible as **Voice error – Restart**. Restart retries
+the current job; a permanently failed Muse synthesis may require a new request.
+Recovery cannot power an unplugged Module or repair a permanent upstream outage.
+Stopping playback does not launch new speech automatically.
+
+Background alignment and timing-cache persistence are optional. If either fails,
+or background analysis adds more than 15 seconds after audio verification, the
+device uses complete-audio word estimates and keeps valid narration. Estimated
+highlighting is not exact forced alignment. Complete-audio integrity and playback
+completion checks remain mandatory.
