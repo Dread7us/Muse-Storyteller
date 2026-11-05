@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.1 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.2 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -10,9 +10,10 @@ should keep Local selected until those prerequisites have been installed.
 Open Sound, choose **Muse / online**, then select **Helio** or **Aria**. Both
 voices were tested through native generation and device playback. Source, voice
 and Slow / Normal / Fast apply to the next reply. Volume remains live. The local
-Piper voice remains installed, and native preparation failures use it before
-playback starts. An interrupted native stream is stopped instead of repeating
-the whole reply with another voice. Stop and Restart use the current reply cache;
+Piper voice remains installed as the separate Local option. A native preparation
+failure now shows an explicit error and keeps Muse selected; it never silently
+switches the requested voice. Failed native jobs can be retried with Restart.
+Stop and Restart use the current reply cache;
 replay does not generate a new Muse response.
 
 The raw Muse catalogue is not an authoritative account-eligible list. These two
@@ -79,10 +80,11 @@ latency. See VALIDATION.md for measured reference results.
 
 ## Buffering and preparation time
 
-The 0.3.2 recovery candidate adds `--compact` to the VM helper. It preserves
+Edition 0.3.2 adds `--compact` to the VM helper. It preserves
 `original.mp3` and uses FFmpeg/libmp3lame to create a 32 kbps, 16 kHz mono
 `audio.mp3` for the Module's 16 kHz playback path. It publishes the delivery
-only after encoding completes, with a hash of the actual delivered bytes.
+as append-only bytes while synthesis is still running. Its final metadata is
+published only after both synthesis and encoding complete, with the actual hash.
 This is an additional lossy encoding of the same voice; the original remains
 available. FFmpeg must be installed in the Muse VM. See its
 [audio option documentation](https://ffmpeg.org/ffmpeg.html#Audio-Options).
@@ -90,9 +92,10 @@ available. FFmpeg must be installed in the Muse VM. See its
 Partial caches are untrusted until the Module verifies their complete MP3
 against the VM's final SHA-256. Resume does not permit partial playback.
 Selecting Muse voice no longer silently falls back to Piper on a preparation
-failure; Local voice remains a separate Sound setting. The candidate also
-shows live preparation progress and animates the welcome screen. Fresh-request
-hardware validation is required before promoting this candidate.
+failure; Local voice remains a separate Sound setting. It also shows live preparation
+progress and animates the welcome screen.
+The Module analyzes decoded windows during transfer, then waits for complete
+integrity verification before publishing timings or starting playback.
 
 Full buffering trades some initial preparation time for steady narration. A
 complete cached reply restarts without downloading or generating speech again.
@@ -100,14 +103,24 @@ Audio is read from the Module's local cache; large replies need not stay entirel
 in Python RAM. The native IPC playback budget is 5 MiB per call, below the
 adapter's 6 MiB message bound. Longer replies keep all samples across blocks.
 
-The reference device retains the factory 115200-baud Core2-to-Module link.
-That link, including base64 framing and acknowledgements, can take minutes to
-transfer a multi-minute MP3 even when the internet download itself is fast.
-The UI shows buffering during preparation. Restarting a complete cached reply
-avoids that transfer. Full buffering improves continuity after speech starts;
-it is not a promise of immediate first playback.
+The public profile retains the factory 115200-baud Core2-to-Module setting.
+The reference installation uses a matched fixed 460800-baud link: both devices
+start at that rate. Starting at one rate and switching after discovery was
+unreliable and is not used. Two Core2 cold starts and a coordinated Module/Core2
+restart passed with the matched initial rate. This is a reference configuration,
+not an automatic migration for every Module firmware.
 
-Higher serial rates were investigated but failed reconnect validation and were
-rolled back, including the Module configuration. They are not enabled by this
-release. A network, timing or transfer failure cannot turn a partial download
-into a successfully completed reply.
+Large UART requests are paced in bounded bursts because this connection has no
+hardware flow control. A SHA-256 envelope protects the exact serialized request,
+and audio blocks have their own byte count/hash. The Core2 checks the exact
+receiver acknowledgement and retries rejected blocks. Only protected partial
+transfers are eligible for resume; the complete MP3 must still match the VM hash.
+
+Changing the serial rate requires backing up the Module configuration and
+matching the Core2 build setting before restarting both devices. Restore both
+sides together when returning to an older image. USB/ADB and SuperDisplay are
+separate connections and are not restarted by this voice path.
+
+Full buffering improves continuity after speech starts; it is not a promise of
+immediate first playback. A network, timing or transfer failure cannot turn a
+partial download into a successfully completed reply.

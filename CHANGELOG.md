@@ -1,17 +1,24 @@
 # Release history
 
-## 0.3.2 — recovery candidate
+## 0.3.2
 
-- Resume interrupted native downloads, including partial caches from before a Module restart.
+- Protect exact UART requests and audio blocks with checksums and exact receiver byte acknowledgements; retry rejected blocks.
+- Resume protected interrupted native downloads, including partial caches from before a Module restart.
 - Reuse verified complete caches without uploading the same MP3 again.
 - Keep the selected Muse voice explicit: preparation failures show an error instead of silently speaking with Piper.
 - Give slow Muse replies time to create their audio, with progress and elapsed time visible.
 - Add an animated, skippable welcome screen throughout microphone/voice startup.
 - Preserve the original Muse MP3 and offer smaller 16 kHz mono delivery through the existing VM helper.
+- Overlap native synthesis/encoding, downloading and word-timing analysis, while still requiring complete verified audio before speaking.
+- Validate a matched fixed 460800-baud reference link through cold starts; retain the factory 115200-baud public build default.
 - Speed up volume processing while preserving every sample and the existing rounding behavior.
 - Add regression checks for resume integrity, complete-cache reuse, volume math and compact delivery failure.
 
-Hardware validation is in progress on this candidate branch.
+Two fresh normal story requests completed in the selected Muse voice. The optimized
+reference run began speaking at 91.2 seconds, versus 148.4 seconds before overlapping
+preparation. All 103.7 seconds of cached PCM and all 341 scheduled words were retained.
+Cached Restart, Pause/Resume, Stop, Settings and reader resizing passed. Linux CI passed
+all 39 tests. See [validation scope](docs/VALIDATION.md) for limits and measured results.
 
 ## 0.3.1
 

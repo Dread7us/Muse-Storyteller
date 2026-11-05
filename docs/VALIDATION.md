@@ -142,3 +142,48 @@ CI runs all 29. Personal audio, scripts and device reports are excluded from the
 public repository. Full initial buffering can still take minutes for long clips
 on the factory serial link; cached replay avoids that transfer. Timing falls
 back to complete-audio estimates if local alignment fails.
+
+## Edition 0.3.2 recovery checks
+
+Investigation reproduced a shortened audio block that still formed valid JSON/base64.
+The receiver had fewer bytes than the sender counted. The previous final hash check
+prevented corrupt playback, but the preparation failure selected Piper. Requests now
+have an exact-payload SHA-256 envelope; blocks have their own length/hash, and the
+sender requires the exact receiver byte acknowledgement before advancing. Legacy
+unprotected partial caches are preserved but are not resumed.
+
+The reference application compiled and passed application-slot digest and healthy-boot
+checks, retaining the selected Muse/Helio voice and 50% volume. Both sides start at a
+matched fixed 460800 baud. Two Core2 cold starts reached voice-ready in 2.386 and
+2.435 seconds with the Module already warm. A coordinated Module/Core2 restart
+reached ready within the 50.6-second observation interval, including screenshot
+capture. Two actual boot frames showed different animated dot/rail positions.
+The public profile keeps its factory 115200-baud default; serial configuration
+must be migrated and rolled back on both sides together.
+
+Two new normal recognized-text story requests—not just fixture/cache replays—
+transferred and played completely in native Muse voice. With preparation stages
+performed serially, the first started at 148.433 seconds. After overlapping compact
+encoding, transfer and decoded-window analysis, the second started at 91.175 seconds.
+Its first received audio was at 27.571 seconds and complete transfer at 83.034 seconds.
+These are separate roughly 340-word stories, not a controlled service benchmark.
+They do not promise the same wait for other lengths or server conditions.
+
+The optimized run verified all 414,720 MP3 bytes against SHA-256, decoded 3,317,760
+PCM bytes (103.68 seconds), and played every sample in one continuous native call.
+The reader reached the final offset of all 341 scheduled words. That run used the
+complete-audio timing fallback because forced alignment did not yield anchors for
+every word; exact per-word timing is not claimed. Timing failure did not shorten
+speech or freeze the reader.
+
+Cached restart entered Speaking in 0.479 seconds from completion and 0.472 seconds
+after Stop. Actual Module pause acknowledgement, Resume, Settings and reader resize
+callbacks passed during playback. All 279 pre-update archived messages remained
+present. The final Core2 had advancing UI frames, no speech error, Helio selected
+at 50%, and the Module/tablet remained connected to the existing SuperDisplay server
+with its Windows service running. No ADB server restart or NVS erase was performed.
+
+Linux CI passed all 39 tests, including compact output becoming downloadable before
+synthesis finishes, stalled-encoder timeout, exact payload/block corruption rejection,
+and timing analysis before completion without publishing unverified results.
+Reference Module tests also exercised actual MP3 resume/decoding and volume math.
