@@ -25,13 +25,17 @@ class Item:
 
 class Aligner:
  def __init__(self):
+  # UART routing and playback controls must win over optional word analysis
+  # on the Module's two CPU cores. Native model threads inherit this priority.
+  try:os.setpriority(os.PRIO_PROCESS,threading.get_native_id(),10)
+  except (AttributeError,OSError):pass
   import sys
   sys.path.insert(0,str(HOME/'vendor'));sys.path.insert(0,str(HOME))
   import ctranslate2,tokenizers
   from native_tokenizer import Tokenizer
   from feature_extractor import FeatureExtractor
   self.ct=ctranslate2;self.extract=FeatureExtractor();self.tokenizer=Tokenizer(tokenizers.Tokenizer.from_file(str(HOME/'tiny-model/tokenizer.json')),False,task='transcribe',language='en')
-  self.model=ctranslate2.models.Whisper(str(HOME/'tiny-model'),device='cpu',compute_type='int8',intra_threads=2,inter_threads=1)
+  self.model=ctranslate2.models.Whisper(str(HOME/'tiny-model'),device='cpu',compute_type='int8',intra_threads=1,inter_threads=1)
   self.lock=threading.Lock()
  def align(self,pcm,text):
   import numpy as np

@@ -49,7 +49,7 @@ bool muse_module_llm_send_line(const char *json){
     // The Module's UART has no hardware flow control. Give its receive path
     // breathing room between bounded bursts of a large JSON request.
     for(size_t at=0;at<n && ok;){
-        size_t count=n-at;if(n>1024 && count>256)count=256;
+        size_t count=n-at;if(n>1024 && count>128)count=128;
         ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json+at,count)==(int)count;at+=count;
         if(n>1024 && ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
     }
@@ -57,6 +57,19 @@ bool muse_module_llm_send_line(const char *json){
     xSemaphoreGive(s_tx_mutex);return ok;
 }
 void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
+bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length){
+    if(!s_tx_mutex||!json||strncmp(json,"{\"RAW\":",7)||strlen(json)>2048||!data||!length||length>8192)return false;
+    xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
+    size_t header=strlen(json);bool ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json,header)==(int)header;
+    // RAW bodies bypass the vendor's per-character JSON extractor. Keep
+    // bounded bursts for the receive thread, without base64 on the wire.
+    for(size_t at=0;ok&&at<length;){size_t count=length-at;if(count>512)count=512;
+        ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,data+at,count)==(int)count;at+=count;
+        if(ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
+    }
+    if(ok)ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
+    xSemaphoreGive(s_tx_mutex);return ok;
+}
 
 static uint32_t s_play_generation, s_cancel_generation, s_record_epoch;
 static bool s_cancel_requested, s_cancel_valid;

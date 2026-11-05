@@ -47,6 +47,20 @@ Full buffering prevents network gaps during narration, but still adds a wait
 proportional to clip length and the Core2-to-Module transfer rate. It is not a
 promise of immediate playback or a sustained UI frame rate.
 
+Audio blocks use the vendor's `RAW` header + exact binary body + framing newline,
+avoiding base64 expansion over UART. The router converts the body locally before
+dispatch. Each block's key, offset, size and audio digest are protected by a
+header checksum; the decoded body is checked separately, then the complete MP3
+is verified at EOF. Text/control packets use the protected ASCII envelope.
+This requires the matching Core2 firmware and Module bridge. Optional timing
+runs on one low-priority CPU thread so it cannot monopolize both Module cores.
+
+The reference installation also wraps its factory startup cue with
+`module/runtime/muse_boot_chime.sh`. An atomic `/run` lock allows one playback
+per boot, even if the startup script is invoked repeatedly. Installing that
+wrapper requires an exact backup and a reviewed change to the factory startup
+script; it is not applied automatically by the source preparation helper.
+
 ## Prepared Helio / Aria narration
 
 Muse writes the exact response script and launches `tools/muse_vm_tts_job.py`

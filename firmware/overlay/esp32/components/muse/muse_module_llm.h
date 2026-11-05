@@ -54,6 +54,8 @@ typedef enum {
  * configured local models, owns native audio, and never calls a paid service.
  * No full model catalog is required: hello validates the configured tasks. */
 bool muse_module_llm_send_line(const char *json);
+/* Vendor RAW header, exact binary body, then its framing newline. */
+bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length);
 void muse_module_llm_session(char out[9]);
 esp_err_t muse_module_llm_speak_external(uint32_t generation,const char *text,unsigned volume,const char *key);
 esp_err_t muse_module_llm_start(void);

@@ -52,6 +52,10 @@ def parse_request(action, envelope, allowed_route):
     if req.get("work_id") != SERVICE or req.get("object") != "musevoice.v1":
         raise BridgeError(-2, "Unsupported bridge protocol")
     request_id, data = req.get("request_id"), req.get("data")
+    # StackFlow RAW framing converts only the binary body to base64 locally.
+    # Metadata remains outside data in its bounded JSON header.
+    if action == "cloud" and isinstance(data, str) and isinstance(req.get("raw_info"), dict):
+        data = dict(req['raw_info'],op='raw_block',audio=data)
     if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", request_id) or not isinstance(data, dict):
         raise BridgeError(-2, "Invalid request identity")
     generation, session = data.get("generation"), data.get("session")

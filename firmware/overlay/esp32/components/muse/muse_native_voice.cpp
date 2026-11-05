@@ -159,13 +159,44 @@ static bool rpc_once(cJSON *data,bool cleanup){
     portENTER_CRITICAL(&lock);rpc_waiting=false;portEXIT_CRITICAL(&lock);
     return done&&ok;
 }
+static bool rpc_raw_once(cJSON *data){
+    char owner[9];muse_module_llm_session(owner);
+    const char *key=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"key"));
+    const char *audio=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"audio"));
+    const char *expected=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"sha256"));
+    double bytes=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"bytes"));
+    double offset=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"offset"));
+    if(!owner[0]||stopped()||!key||strlen(key)!=24||!audio||strlen(audio)>11000||!expected||strlen(expected)!=64||!(bytes>=1&&bytes<=8192)||!(offset>=0&&offset<=32*1024*1024)||bytes!=(size_t)bytes||offset!=(size_t)offset){cJSON_Delete(data);return false;}
+    uint8_t *raw=(uint8_t *)malloc((size_t)bytes);size_t decoded=0;char hash[65],signature[65],canonical[150];
+    if(!raw||mbedtls_base64_decode(raw,(size_t)bytes,&decoded,(const uint8_t *)audio,strlen(audio))||decoded!=(size_t)bytes||!hex_digest(raw,decoded,hash)||strcmp(hash,expected)){free(raw);cJSON_Delete(data);return false;}
+    snprintf(canonical,sizeof(canonical),"%s:%u:%u:%s",key,(unsigned)offset,(unsigned)decoded,hash);
+    if(!hex_digest((const uint8_t *)canonical,strlen(canonical),signature)){free(raw);cJSON_Delete(data);return false;}
+    cJSON *root=cJSON_CreateObject(),*info=cJSON_CreateObject();
+    if(!root||!info){cJSON_Delete(root);cJSON_Delete(info);free(raw);cJSON_Delete(data);return false;}
+    // RAW must be the first JSON key for the stock StackFlow extractor.
+    cJSON_AddNumberToObject(root,"RAW",decoded);
+    char id[64];snprintf(id,sizeof(id),"cloud-%08lx-%08lx",(unsigned long)esp_random(),(unsigned long)++rpc_serial);
+    cJSON_AddStringToObject(root,"request_id",id);cJSON_AddStringToObject(root,"work_id","musevoice");cJSON_AddStringToObject(root,"object","musevoice.v1");cJSON_AddStringToObject(root,"action","cloud");
+    cJSON_AddStringToObject(info,"session",owner);cJSON_AddNumberToObject(info,"generation",0);cJSON_AddStringToObject(info,"key",key);cJSON_AddNumberToObject(info,"offset",offset);cJSON_AddNumberToObject(info,"bytes",decoded);cJSON_AddStringToObject(info,"sha256",hash);cJSON_AddStringToObject(info,"packet_sha256",signature);cJSON_AddItemToObject(root,"raw_info",info);
+    char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);cJSON_Delete(data);
+    if(!json){free(raw);return false;}
+    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
+    bool sent=muse_module_llm_send_binary(json,raw,decoded);cJSON_free(json);free(raw);
+    int64_t until=now()+10000000;bool done=false,ok=false;
+    while(sent&&now()<until&&!stopped()){
+        portENTER_CRITICAL(&lock);done=rpc_done;ok=rpc_ok;portEXIT_CRITICAL(&lock);
+        if(done){break;}
+        pause_ms(2);
+    }
+    portENTER_CRITICAL(&lock);rpc_waiting=false;portEXIT_CRITICAL(&lock);return done&&ok;
+}
 static bool rpc(cJSON *data,bool cleanup=false){
     bool ok=false;size_t expected_received=0;
     const char *op=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"op"));
     if(op&&!strcmp(op,"chunk"))expected_received=(size_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"offset"))+(size_t)cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(data,"bytes"));
     for(unsigned attempt=0;attempt<(cleanup?1U:3U)&&(!stopped()||cleanup);attempt++){
         cJSON *copy=cJSON_Duplicate(data,true);if(!copy)break;
-        if(rpc_once(copy,cleanup)){
+        if(op&&!strcmp(op,"chunk")?rpc_raw_once(copy):rpc_once(copy,cleanup)){
             portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
             if(!expected_received || acknowledged==expected_received){ok=true;break;}
         }
@@ -327,11 +358,13 @@ EXT_RAM_BSS_ATTR static uint8_t direct_ring[DIRECT_CAP];
 static size_t direct_read,direct_write,direct_used;
 static int direct_status;
 static bool direct_done,direct_failed;
+static size_t direct_max_frame;
 static uint32_t direct_token;
 static char direct_message[128];
 static void direct_cb(void *context,int status,const uint8_t *data,size_t length,bool end){
     uint32_t token=(uint32_t)(uintptr_t)context;size_t at=0;
-    int64_t deadline=now()+10000000;
+    int64_t deadline=now()+90000000;
+    portENTER_CRITICAL(&lock);if(token==direct_token&&length>direct_max_frame)direct_max_frame=length;portEXIT_CRITICAL(&lock);
     while(at<length){
         portENTER_CRITICAL(&lock);
         if(token!=direct_token){portEXIT_CRITICAL(&lock);return;}
@@ -339,6 +372,7 @@ static void direct_cb(void *context,int status,const uint8_t *data,size_t length
         if(stopped()||direct_failed){direct_failed=true;portEXIT_CRITICAL(&lock);return;}
         size_t take=length-at,room=DIRECT_CAP-direct_used;
         if(take>room)take=room;
+        if(take>4096)take=4096;
         if(take>DIRECT_CAP-direct_write)take=DIRECT_CAP-direct_write;
         if(take){memcpy(direct_ring+direct_write,data+at,take);direct_write=(direct_write+take)%DIRECT_CAP;direct_used+=take;at+=take;}
         portEXIT_CRITICAL(&lock);
@@ -369,7 +403,7 @@ static bool direct_transfer(bool legacy){
     // A retry re-downloads the immutable message and verifies already admitted
     // blocks too. The receiver accepts identical duplicates, never replacements.
     portENTER_CRITICAL(&lock);
-    direct_read=direct_write=direct_used=0;direct_status=0;direct_done=direct_failed=false;uint32_t token=++direct_token;
+    direct_read=direct_write=direct_used=direct_max_frame=0;direct_status=0;direct_done=direct_failed=false;uint32_t token=++direct_token;
     portEXIT_CRITICAL(&lock);
     const char *headers[]={"Accept","audio/mpeg",nullptr};
     int64_t request=muse_link_req_open("GET",path,headers,true,direct_cb,(void *)(uintptr_t)token);
@@ -411,7 +445,7 @@ static bool direct_transfer(bool legacy){
     psa_hash_abort(&digest);
     if(okay){buffered(offset,offset);phase(4);state.store(1);}
     else rpc(operation("abort"),true);
-    printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"ms\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)((now()-started_us)/1000));fflush(stdout);
+    printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"max_frame\":%u,\"ms\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)direct_max_frame,(unsigned)((now()-started_us)/1000));fflush(stdout);
     // Match the official client: only a 404 selects the legacy endpoint.
     return okay;
 }

@@ -929,6 +929,12 @@ static bool ensure_connected(void)
     char err[48] = "";
     for (int attempt = 0; attempt < 2; attempt++) {
         if (!resolve_vm(err, sizeof(err))) {
+            // Link serializes startup/account work behind a bounded gate.
+            // One transient lookup failure must not discard the first question.
+            if(attempt==0&&muse_link_hatch_linked()&&muse_wifi_connected()){
+                muse_hatch_report(MUSE_HATCH_TESTING,"Retrying connection...");
+                vTaskDelay(pdMS_TO_TICKS(250));continue;
+            }
             break;
         }
         int status;
