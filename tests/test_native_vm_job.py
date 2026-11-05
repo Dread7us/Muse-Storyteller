@@ -83,7 +83,7 @@ class Jobs(unittest.TestCase):
     def test_compact_delivery_keeps_original_and_hashes_complete_output(self):
         executable=self.fake('import sys\nsys.stdout.buffer.write(b"x"*2048)\n')
         encoder=self.root/'encoder'
-        encoder.write_text('#!/usr/bin/python3\nfrom pathlib import Path\nimport sys\nPath(sys.argv[-1]).write_bytes(b"c"*1024)\n');encoder.chmod(0o700)
+        encoder.write_text('#!/usr/bin/python3\nimport sys\nsys.stdin.buffer.read();sys.stdout.buffer.write(b"c"*1024)\n');encoder.chmod(0o700)
         meta=self.run_job(executable,compact=True,ffmpeg=encoder)
         self.assertEqual((self.job/'original.mp3').read_bytes(),b'x'*2048)
         self.assertEqual((self.job/'audio.mp3').read_bytes(),b'c'*1024)
@@ -94,7 +94,35 @@ class Jobs(unittest.TestCase):
         encoder=self.root/'encoder';encoder.write_text('#!/usr/bin/python3\nimport sys\nsys.exit(1)\n');encoder.chmod(0o700)
         with self.assertRaises(RuntimeError):self.run_job(executable,compact=True,ffmpeg=encoder)
         self.assertEqual(json.loads((self.job/'meta.json').read_text())['state'],'error')
-        self.assertFalse((self.job/'audio.mp3').exists());self.assertEqual((self.job/'original.mp3').stat().st_size,2048)
+        self.assertEqual((self.job/'original.mp3').stat().st_size,2048)
+
+    def test_compact_stream_can_download_before_synthesis_finishes(self):
+        executable=self.fake('import sys,time\nsys.stdout.buffer.write(b"x"*1024);sys.stdout.flush();time.sleep(.8);sys.stdout.buffer.write(b"y"*1024)\n')
+        encoder=self.root/'encoder'
+        encoder.write_text('#!/usr/bin/python3\nimport os\nwhile True:\n b=os.read(0,1024)\n if not b:break\n os.write(1,b)\n');encoder.chmod(0o700)
+        errors=[]
+        def run():
+            try:self.run_job(executable,compact=True,ffmpeg=encoder)
+            except BaseException as error:errors.append(error)
+        worker=threading.Thread(target=run);worker.start();until=time.monotonic()+3;observed=False
+        while time.monotonic()<until:
+            try:
+                meta=json.loads((self.job/'meta.json').read_text())
+                if meta['state']=='streaming' and (self.job/'audio.mp3').stat().st_size:
+                    self.assertTrue(worker.is_alive());observed=True;break
+            except FileNotFoundError:pass
+            time.sleep(.01)
+        worker.join(4);self.assertFalse(worker.is_alive());self.assertFalse(errors);self.assertTrue(observed)
+        meta=json.loads((self.job/'meta.json').read_text());self.assertEqual(meta['state'],'complete')
+        self.assertEqual(meta['audio_sha256'],hashlib.sha256(b'x'*1024+b'y'*1024).hexdigest())
+
+    def test_stalled_compact_encoder_cannot_bypass_job_timeout(self):
+        executable=self.fake('import sys\nsys.stdout.buffer.write(b"x"*1000000)\n')
+        encoder=self.root/'encoder';encoder.write_text('#!/usr/bin/python3\nimport time\ntime.sleep(30)\n');encoder.chmod(0o700)
+        start=time.monotonic()
+        with self.assertRaises(TimeoutError):self.run_job(executable,compact=True,ffmpeg=encoder,deadline_seconds=.15)
+        self.assertLess(time.monotonic()-start,4)
+        self.assertEqual(json.loads((self.job/'meta.json').read_text())['state'],'error')
 
 
 if __name__=='__main__':unittest.main()

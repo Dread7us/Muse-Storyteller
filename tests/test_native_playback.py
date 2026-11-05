@@ -94,6 +94,18 @@ class CompleteCache(unittest.TestCase):
   player=Player();result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
   self.assertEqual(player.parts,[len(self.pcm)]);self.assertTrue(result['complete'])
   self.assertEqual(result['played_pcm_bytes'],len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
+ def test_timing_analyzes_incomplete_windows_but_publishes_only_after_integrity(self):
+  (self.folder/'complete.json').unlink();seen=threading.Event()
+  class Aligner:
+   def align(self,pcm,text):seen.set();return []
+  self.store.warm=lambda:Aligner()
+  item=types.SimpleNamespace(text=self.text,folder=self.folder,pcm=self.folder/'voice.pcm',done=False,error=None,size=lambda:(self.folder/'voice.pcm').stat().st_size)
+  future=self.store.pool.submit(self.store._schedule,item,None)
+  try:
+   self.assertTrue(seen.wait(3));self.assertFalse(future.done());self.assertFalse((self.folder/'timing.json').exists())
+  finally:item.done=True
+  schedule=future.result(3)
+  self.assertEqual(schedule[-1][2],len(self.text));self.assertEqual(json.loads((self.folder/'timing.json').read_text())['pcm_bytes'],len(self.pcm))
  def test_restart_recovers_complete_cache_without_realigning(self):
   first=Player();self.store.play(first,self.key,self.text,50,threading.Event(),None)
   fresh=native.Store(self.directory)

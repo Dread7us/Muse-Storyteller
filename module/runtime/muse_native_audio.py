@@ -118,6 +118,9 @@ class Store:
       item.file.flush();item.decoder.stdin.flush()
      except BaseException:item.abort();raise
     if self.warming is None:self.warming=self.pool.submit(self.warm)
+    # Analyze decoded windows while the remaining MP3 is arriving. The result
+    # cannot be published or played until end verifies the entire transfer.
+    item.timing_future=self.pool.submit(self._schedule,item,None)
     return {'received':item.received,'complete':False,'sha256':item.digest.hexdigest()}
    if item is None or item.session!=session:raise NativeAudioError('Stale native audio transfer')
    if getattr(item,'integrity',False) and data.get('_transport_verified') is not True:raise NativeAudioError('Native transfer requires verified requests')
@@ -187,24 +190,37 @@ class Store:
   from muse_speech_text import SpeechText
   # Estimate against complete PCM as the safe fallback. Alignment may improve
   # timing, but it must never truncate, drop or stop valid narration.
-  pcm=item.pcm.read_bytes();spoken=SpeechText(item.text)
-  timing=WordTiming(item.text);fallback=timing.phrase(timing.normalized,pcm)
+  spoken=SpeechText(item.text)
   cache=item.folder/'timing.json'
   signature=hashlib.sha256(item.text.encode()).hexdigest()
   try:
    stored=json.loads(cache.read_text())
-   if stored.get('version')==2 and stored.get('source')==signature and stored.get('pcm_bytes')==len(pcm):
+   if item.done and stored.get('version')==2 and stored.get('source')==signature and stored.get('pcm_bytes')==item.size():
     values=stored['words']
-    if len(values)==len(spoken.words) and all(0<=t<len(pcm)/32000 and 0<=a<b<=len(item.text.encode()) for t,a,b in values):return values
+    if len(values)==len(spoken.words) and all(0<=t<item.size()/32000 and 0<=a<b<=len(item.text.encode()) for t,a,b in values):return values
   except (OSError,ValueError,TypeError,KeyError):pass
-  words=spoken.words;anchors={};position=0.;cursor=0;duration=len(pcm)/32000.
+  words=spoken.words;anchors={};position=0.;cursor=0;deadline=time.monotonic()+1200
+  def wait_for_window(seconds):
+   while not item.done and item.size()<seconds*32000:
+    check_cancel(cancel)
+    if item.error:raise NativeAudioError(item.error)
+    if time.monotonic()>deadline:raise NativeAudioError('Timing preparation timed out')
+    time.sleep(.025)
+   check_cancel(cancel)
+   if item.error:raise NativeAudioError(item.error)
   try:
    aligner=self.warm()
-   while position<duration-.04 and cursor<len(words):
+   while cursor<len(words):
+    wait_for_window(position+24)
+    duration=item.size()/32000.
+    if position>=duration-.04:break
     check_cancel(cancel)
-    end=min(duration,position+24);limit=end if end==duration else end-.8
+    end=min(duration,position+24);final_window=item.done and end==duration
+    limit=end if final_window else end-.8
     candidates=words[cursor:cursor+120];a=candidates[0][0];z=candidates[-1][1]
-    aligned=aligner.align(pcm[int(position*16000)*2:int(end*16000)*2],spoken.text[a:z])
+    with item.pcm.open('rb') as stream:
+     stream.seek(int(position*16000)*2);pcm_window=stream.read(int(end*16000)*2-int(position*16000)*2)
+    aligned=aligner.align(pcm_window,spoken.text[a:z])
     progress=[]
     for begin,finish,lo,hi in aligned:
      if finish-begin<.025 or position+finish>limit:continue
@@ -212,7 +228,7 @@ class Store:
       word=words[index]
       if word[0]<a+hi and word[1]>a+lo:
        anchors.setdefault(index,position+begin);progress.append((index,position+begin))
-    if end==duration:break
+    if final_window:break
     if not progress:break
     index,at=max(progress,key=lambda x:x[0])
     if index<=cursor or at<=position+.2:break
@@ -220,12 +236,18 @@ class Store:
     cursor,position=index,at
   except Exception:
    check_cancel(cancel) # cancellation remains authoritative; alignment is optional
+  # Even failed/partial alignment waits for final integrity before using audio.
+  wait_for_window(float('inf'))
+  size=item.size()
+  if size<320 or size%2 or size>32*1024*1024:raise NativeAudioError('Invalid complete decoded audio')
   # Use true timings only when every word has a stable monotonic anchor. A
   # collapsed alignment can otherwise make the reader race to the last word.
   good=len(anchors)==len(words) and all(anchors[i]<=anchors[i+1] for i in range(len(words)-1))
-  schedule=[(anchors[i],w[2],w[3]) for i,w in enumerate(words)] if good else fallback
+  if good:schedule=[(anchors[i],w[2],w[3]) for i,w in enumerate(words)]
+  else:
+   pcm=item.pcm.read_bytes();timing=WordTiming(item.text);schedule=timing.phrase(timing.normalized,pcm)
   check_cancel(cancel)
-  temporary=cache.with_suffix('.pending');temporary.write_text(json.dumps({'version':2,'source':signature,'pcm_bytes':len(pcm),'words':schedule}));temporary.replace(cache)
+  temporary=cache.with_suffix('.pending');temporary.write_text(json.dumps({'version':2,'source':signature,'pcm_bytes':size,'aligned':good,'words':schedule}));temporary.replace(cache)
   return schedule
  def play(self,backend,key,text,volume,cancel,on_play):
   from muse_voice_backend import check_cancel
@@ -245,7 +267,11 @@ class Store:
    if item.error:raise NativeAudioError(item.error)
    size=item.size()
    if size<320 or size%2 or size>32*1024*1024:raise NativeAudioError('Invalid complete decoded audio')
-   schedule=self._schedule(item,cancel)
+   prepared=getattr(item,'timing_future',None)
+   if prepared is not None:
+    while not prepared.done():check_cancel(cancel);time.sleep(.025)
+    schedule=prepared.result()
+   else:schedule=self._schedule(item,cancel)
    # Fit the native IPC budget. Prefer complete sentence endings only for
    # exceptionally long replies; ordinary replies play in a single native call.
    maximum=5*1024*1024;position=0

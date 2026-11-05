@@ -5,6 +5,7 @@ existing authenticated VM file transport. This helper does not implement that
 device transport. Install beside the reviewed muse_speech_text.py normalizer.
 """
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -85,7 +86,18 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
     total = 0
     try:
         atomic_json(job / "meta.json", meta)
-        with (job / ("original.mp3" if compact else "audio.mp3")).open("xb") as audio:
+        with ExitStack() as files:
+            audio=files.enter_context((job / ("original.mp3" if compact else "audio.mp3")).open("xb"))
+            if compact:
+                delivery=files.enter_context((job/'audio.mp3').open('xb'))
+                # Append-only delivery can download while the original is still
+                # being generated. Only final hashes admit it for playback.
+                encoder=subprocess.Popen([str(ffmpeg),'-nostdin','-v','error',
+                    '-probesize','8192','-analyzeduration','0','-f','mp3','-i','pipe:0',
+                    '-map','0:a:0','-vn','-ac','1','-ar','16000','-c:a','libmp3lame','-b:a','32k',
+                    '-write_xing','0','-id3v2_version','0','-flush_packets','1','-f','mp3','pipe:1'],
+                    stdin=subprocess.PIPE,stdout=delivery,stderr=subprocess.DEVNULL,start_new_session=True)
+                os.set_blocking(encoder.stdin.fileno(),False)
             process = subprocess.Popen(
                 [str(executable), "speak", "--text", spoken, "--voice", voice,
                  "--language", "en", "--speed", str(SPEEDS[speed]), "--stream"],
@@ -97,6 +109,11 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
                 while True:
                     if time.monotonic() - started > deadline_seconds:
                         raise TimeoutError("Muse synthesis timed out")
+                    if compact and time.monotonic()-last_update>=.1:
+                        delivered=(job/'audio.mp3').stat().st_size
+                        if delivered>=128 and (meta['state']!='streaming' or time.monotonic()-last_update>=.5):
+                            meta.update(state='streaming',audio_bytes=delivered,original_audio_bytes=total)
+                            atomic_json(job/'meta.json',meta);last_update=time.monotonic()
                     if not selector.select(timeout=.1):
                         if process.poll() is not None:
                             # An exited process can still have unread stdout;
@@ -110,13 +127,24 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
                         raise ValueError("Muse audio exceeds cache bound")
                     audio.write(block)
                     audio.flush()
+                    if compact:
+                        pending=memoryview(block)
+                        while pending:
+                            if time.monotonic()-started>deadline_seconds:raise TimeoutError('Native delivery encoder timed out')
+                            try:
+                                written=os.write(encoder.stdin.fileno(),pending)
+                                if written<=0:raise RuntimeError('Native delivery encoder stopped')
+                                pending=pending[written:]
+                            except BlockingIOError:time.sleep(.01)
+                            except BrokenPipeError:raise RuntimeError('Native delivery encoder stopped')
                     digest.update(block)
                     total += len(block)
                     now = time.monotonic()
                     if "first_byte_ms" not in meta:
                         meta["first_byte_ms"] = round((now-started)*1000)
                     if meta["state"] == "preparing" or now-last_update >= .5:
-                        meta.update(state="synthesizing" if compact else "streaming", audio_bytes=0 if compact else total)
+                        delivered=(job/'audio.mp3').stat().st_size if compact else total
+                        meta.update(state="streaming" if delivered>=128 else "synthesizing",audio_bytes=delivered)
                         if compact:meta['original_audio_bytes']=total
                         atomic_json(job / "meta.json", meta)
                         last_update = now
@@ -124,18 +152,15 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
             if process.wait(timeout=remaining) != 0 or total < 128:
                 raise RuntimeError("Muse synthesis did not produce usable audio")
             os.fsync(audio.fileno())
-        if compact:
-            meta.update(state='optimizing',original_audio_bytes=total);atomic_json(job/'meta.json',meta)
-            target=job/'delivery.pending.mp3'
-            encoder=subprocess.Popen([str(ffmpeg),'-nostdin','-v','error','-y','-i',str(job/'original.mp3'),
-                '-map','0:a:0','-vn','-ac','1','-ar','16000','-c:a','libmp3lame','-b:a','32k',
-                '-write_xing','0','-id3v2_version','0',str(target)],stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
-            if encoder.wait(timeout=60)!=0:raise RuntimeError('Native delivery encoding failed')
-            encoded=target.read_bytes()
-            if not 128<=len(encoded)<=MAX_AUDIO:raise RuntimeError('Invalid native delivery encoding')
-            target.replace(job/'audio.mp3');total=len(encoded);digest=hashlib.sha256(encoded)
-            meta.update(delivery_bitrate=32000,delivery_sample_rate=16000)
+            if compact:
+                meta['original_audio_bytes']=total
+                encoder.stdin.close()
+                if encoder.wait(timeout=60)!=0:raise RuntimeError('Native delivery encoding failed')
+                os.fsync(delivery.fileno())
+                encoded=(job/'audio.mp3').read_bytes()
+                if not 128<=len(encoded)<=MAX_AUDIO:raise RuntimeError('Invalid native delivery encoding')
+                total=len(encoded);digest=hashlib.sha256(encoded)
+                meta.update(delivery_bitrate=32000,delivery_sample_rate=16000)
         meta.update(state="complete", audio_bytes=total,
                     audio_sha256=digest.hexdigest(),
                     elapsed_ms=round((time.monotonic()-started)*1000))
@@ -154,6 +179,8 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
     finally:
         if process is not None and process.stdout is not None:
             process.stdout.close()
+        if encoder is not None and encoder.stdin is not None and not encoder.stdin.closed:
+            encoder.stdin.close()
 
 
 def main():
