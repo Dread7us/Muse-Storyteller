@@ -60,6 +60,19 @@ class Store:
   with self.warm_lock:
    if self.aligner is None:self.aligner=Aligner()
    return self.aligner
+ def _partial(self,key,text):
+  signature=hashlib.sha256(text.encode()).hexdigest();candidates=[]
+  for folder in self.root.parent.glob('*/'+key):
+   try:
+    mp3=folder/'voice.mp3'
+    if folder.is_symlink() or folder.parent.is_symlink() or mp3.is_symlink():continue
+    if (folder/'complete.json').exists() or (folder/'invalid.json').exists():continue
+    manifest=folder/'transfer.json'
+    if manifest.exists() and json.loads(manifest.read_text()).get('source_sha256')!=signature:continue
+    size=mp3.stat().st_size
+    if 0<size<=MAX_AUDIO:candidates.append((size,mp3))
+   except (OSError,ValueError,TypeError):continue
+  return max(candidates,key=lambda entry:entry[0])[1] if candidates else None
  def request(self,data,session):
   op,key=data.get('op'),data.get('key')
   if not isinstance(key,str) or not re.fullmatch('[0-9a-f]{24}',key):raise NativeAudioError('Invalid native audio key')
@@ -68,11 +81,18 @@ class Store:
    if op=='begin':
     text=data.get('text')
     if not isinstance(text,str) or not text.strip() or len(text.encode())>8192 or '\x00' in text:raise NativeAudioError('Native speech needs its original script')
+    item=item or self._load(key,text)
+    prefix=None;force_fresh=False
     if item:
-     if item.session!=session or item.text!=text:raise NativeAudioError('Native audio identity changed')
-     if not item.error:return {'received':item.received}
+     if item.text!=text:raise NativeAudioError('Native audio identity changed')
+     if item.session!=session and key in self.active:raise NativeAudioError('Native playback cache is busy')
+     item.session=session
+     if not item.error:return {'received':item.received,'complete':item.done,'sha256':item.digest.hexdigest()}
      if key in self.active:raise NativeAudioError('Native playback cache is busy')
-     item.abort();shutil.rmtree(item.folder);del self.items[key]
+     item.abort();previous=item.folder.with_name(key+'.partial-'+uuid.uuid4().hex[:8]);item.folder.rename(previous)
+     if not (previous/'invalid.json').exists():prefix=previous/'voice.mp3'
+     else:force_fresh=True
+     del self.items[key]
     # Only paired device uploads are admitted by the caller. Retain at most eight recent replies.
     if shutil.disk_usage(self.root).free<128*1024*1024:raise NativeAudioError('Native audio cache needs free storage')
     if len(self.items)>=8:
@@ -81,9 +101,21 @@ class Store:
      old=self.items.pop(oldest)
      if not old.done:old.abort()
      shutil.rmtree(old.folder)
+    prefix=prefix or (None if force_fresh else self._partial(key,text))
     item=Item(self.root,key,text,session);self.items[key]=item
+    item.prefix_origin=prefix
+    (item.folder/'transfer.json').write_text(json.dumps({'source_sha256':hashlib.sha256(text.encode()).hexdigest()}))
+    if prefix:
+     try:
+      with prefix.open('rb') as old:
+       while True:
+        block=old.read(8192)
+        if not block:break
+        item.file.write(block);item.decoder.stdin.write(block);item.digest.update(block);item.received+=len(block)
+      item.file.flush();item.decoder.stdin.flush()
+     except BaseException:item.abort();raise
     if self.warming is None:self.warming=self.pool.submit(self.warm)
-    return {'received':0}
+    return {'received':item.received,'complete':False,'sha256':item.digest.hexdigest()}
    if item is None or item.session!=session:raise NativeAudioError('Stale native audio transfer')
    if op=='abort':
     if not item.done:item.abort()
@@ -107,7 +139,10 @@ class Store:
     item.file.write(raw);item.file.flush();item.decoder.stdin.write(raw);item.decoder.stdin.flush();item.digest.update(raw);item.received+=len(raw)
     return {'received':item.received}
    if op=='end':
-    if data.get('bytes')!=item.received or data.get('sha256')!=item.digest.hexdigest():item.abort();raise NativeAudioError('Native audio integrity check failed')
+    if data.get('bytes')!=item.received or data.get('sha256')!=item.digest.hexdigest():
+     (item.folder/'invalid.json').write_text('{"reason":"integrity"}')
+     if getattr(item,'prefix_origin',None):(item.prefix_origin.parent/'invalid.json').write_text('{"reason":"integrity"}')
+     item.abort();raise NativeAudioError('Native audio integrity check failed')
     item.file.close();item.decoder.stdin.close();item.decoder.wait(timeout=8)
     if item.decoder.returncode or item.size()<320: item.error='Native audio decoding failed';raise NativeAudioError(item.error)
     item.done=True
@@ -126,11 +161,13 @@ class Store:
     if meta.get('source_sha256')!=hashlib.sha256(raw).hexdigest():continue
     mp3=folder/'voice.mp3';pcm=folder/'voice.pcm'
     if mp3.stat().st_size!=meta['audio_bytes'] or pcm.stat().st_size!=meta['pcm_bytes']:continue
-    if hashlib.sha256(mp3.read_bytes()).hexdigest()!=meta['audio_sha256']:continue
+    digest=hashlib.sha256(mp3.read_bytes())
+    if digest.hexdigest()!=meta['audio_sha256']:continue
     item=object.__new__(Item)
     item.key,item.text,item.session=key,text,None
     item.folder,item.mp3,item.pcm=folder,mp3,pcm
     item.received,item.done,item.error=meta['audio_bytes'],True,None
+    item.digest=digest
     item.file=None;item.decoder=None
     self.items[key]=item
     return item

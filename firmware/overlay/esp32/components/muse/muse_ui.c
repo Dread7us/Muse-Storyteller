@@ -53,6 +53,7 @@
 #include "src/misc/lv_text_private.h"
 #include "muse_module_llm.h"
 #include "muse_startup.h"
+#include "muse_native_voice.h"
 #include "muse_storyteller_version.h"
 #define HAS_MODULE_AUDIO true
 #else
@@ -2645,6 +2646,13 @@ static void update_status(muse_mode_t mode, float now)
 
 #if CONFIG_MUSE_MODULE_LLM
     muse_module_llm_status_t playback_status;muse_module_llm_status(&playback_status);
+    muse_native_voice_status_t native;muse_native_voice_status(&native);
+    if(native.active && mode==MUSE_MODE_THINKING){
+        if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
+        else if(native.phase==3)snprintf(preparing_label,sizeof(preparing_label),"CHECKING AUDIO");
+        else snprintf(preparing_label,sizeof(preparing_label),"CREATING VOICE %us",native.elapsed_ms/1000);
+        name=preparing_label;
+    }
     if(playback_status.pause_requested)name=playback_status.paused?"PAUSED":"PAUSING";
     else if(playback_status.paused)name="RESUMING";
     if(muse_memory_recorder_active())name="RECORDING";

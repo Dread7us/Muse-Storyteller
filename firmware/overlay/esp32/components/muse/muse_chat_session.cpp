@@ -1241,7 +1241,7 @@ static void send_chat(const char *text, const char *modality)
         s_turn.native_voice=muse_settings_muse_voice();s_turn.native_speed=muse_settings_speech_speed();
         const char *voice=s_turn.native_voice==1?"avocado_v2:MAI_01":"avocado_v2:MAI_03";
         const char *speeds[]={"slow","normal","fast"};
-        snprintf(native_prompt,sizeof(native_prompt),"\nDevice narration delivery: Answer the question below normally, without shortening stories or lists. Also write the exact complete answer (Markdown allowed, at most 8192 UTF-8 bytes) to ~/muse-storyteller/replies/%s/source.md, creating this fresh directory. Use ONLY the already installed built-in Muse helper: launch python3 ~/muse-storyteller/tools/muse_vm_tts_job.py %s --voice %s --speed %s as a detached background job with stdin /dev/null and stdout/stderr in that job directory. Do not wait for synthesis to finish. Do not change global voice/settings or install a provider. Then return the exact same answer as normal text, without paths, tool acknowledgements or delivery instructions. If the installed helper cannot be launched, return the normal answer anyway; the device keeps a local fallback. This paragraph is device delivery configuration, not part of the answer.\n",s_turn.native_job,s_turn.native_job,voice,speeds[s_turn.native_speed]);
+        snprintf(native_prompt,sizeof(native_prompt),"\nDevice narration delivery: Answer the question below normally, without shortening stories or lists. Also write the exact complete answer (Markdown allowed, at most 8192 UTF-8 bytes) to ~/muse-storyteller/replies/%s/source.md, creating this fresh directory. Use ONLY the installed built-in Muse helper: launch python3 ~/muse-storyteller/tools/muse_vm_tts_job.py %s --voice %s --speed %s --compact as a detached background job with stdin /dev/null and stdout/stderr in that job directory. Do not wait for synthesis to finish. Do not change global voice/settings or install a provider. Then return the exact same answer as normal text, without paths, tool acknowledgements or delivery instructions. If the helper cannot launch, return the answer text and briefly report that audio could not be created. This paragraph is device delivery configuration, not part of the answer.\n",s_turn.native_job,s_turn.native_job,voice,speeds[s_turn.native_speed]);
     }
     size_t pref_cap=strlen(preferences)+strlen(native_prompt)+strlen(base)+1;char *preferred=(char *)malloc(pref_cap);
     if(preferred)snprintf(preferred,pref_cap,"%s%s%s",preferences,native_prompt,base);
@@ -1480,6 +1480,7 @@ static void message_done(int i, const char *final_text)
         (s_turn.texts ? s_turn.texts + i * TEXT_MAX : nullptr);
     if (conversation_text && !s_turn.native_job[0]) m.conversation_id = s_bench_reply?muse_conversation_add_transient(false,conversation_text):muse_conversation_add(false, conversation_text);
     if(m.len && m.len<TEXT_MAX && s_turn.texts)s_can_restart=true;
+    if(s_turn.native_job[0])muse_native_voice_answer_ready(s_turn.gen,false);
 #endif
     if (m.len && m.tts == TTS_NONE) {
         m.tts = TTS_QUEUED;s_playback_active=true;
@@ -1530,6 +1531,7 @@ static void on_event(cJSON *line)
         if (s_turn.text && s_turn.agent_busy != was) {
             muse_hatch_console("busy", nullptr, "\"on\":%s", s_turn.agent_busy ? "true" : "false");
         }
+        if(s_turn.native_job[0])muse_native_voice_answer_ready(s_turn.gen,s_turn.agent_busy);
         s_turn.last_event_us = now_us();
         return;
     }
@@ -1616,12 +1618,17 @@ static void start_tts(void)
             if(s_turn.native_job[0] && !m.external_key[0] && !s_replaying){
                 if(s_turn.native_claimed){m.native_skip=true;m.tts=TTS_FINISHED;continue;}
                 if(!s_turn.native_started){
-                    s_turn.native_started=true;
-                    if(!muse_native_voice_begin(s_turn.native_job,s_turn.gen,s_turn.native_voice,s_turn.native_speed))s_turn.native_job[0]=0;
+                    s_turn.native_started=muse_native_voice_begin(s_turn.native_job,s_turn.gen,s_turn.native_voice,s_turn.native_speed);
+                    if(!s_turn.native_started){muse_state_set_caption("Preparing Muse audio...");return;}
                 }
                 if(s_turn.native_job[0]){
                     char key[25];int ready=muse_native_voice_copy(s_turn.gen,s_turn.texts+i*TEXT_MAX,TEXT_MAX,key);
-                    if(ready==0){muse_state_set_caption("Buffering complete Muse audio...");return;}
+                    if(ready==0){
+                        muse_native_voice_status_t p;muse_native_voice_status(&p);
+                        if(p.total)muse_state_set_caption("Loading Muse voice: %u%%",(unsigned)((uint64_t)p.received*100/p.total));
+                        else muse_state_set_caption("Muse is preparing your voice...");
+                        return;
+                    }
                     if(ready==1){
                         strlcpy(m.external_key,key,sizeof(m.external_key));m.len=strlen(local_text);s_turn.native_claimed=true;
                         // The authenticated script and complete clip are now local.
@@ -1629,7 +1636,13 @@ static void start_tts(void)
                         s_local_only=true;s_turn.agent_busy=false;s_can_restart=true;
                         for(int other=0;other<s_turn.nmsgs;other++)if(other!=i){s_turn.msgs[other].done=true;s_turn.msgs[other].native_skip=true;s_turn.msgs[other].tts=TTS_FINISHED;}
                     }
-                    else{s_turn.native_job[0]=0;ESP_LOGW(TAG,"Muse audio unavailable; using local fallback");}
+                    else{
+                        // Selecting Muse voice must never silently speak in Piper.
+                        if(!m.conversation_id)m.conversation_id=s_bench_reply?muse_conversation_add_transient(false,local_text):muse_conversation_add(false,local_text);
+                        muse_conversation_bind_speech(m.conversation_id);show_reply_start(m);
+                        s_can_restart=true;
+                        turn_fail("MUSE AUDIO FAILED - TAP RESTART");return;
+                    }
                 }
             }
             if(!m.conversation_id)m.conversation_id=s_bench_reply?muse_conversation_add_transient(false,local_text):muse_conversation_add(false,local_text);
@@ -2290,7 +2303,10 @@ static void restart_reply(void)
     s_playback_active=true;s_replaying=true;
     // Stop during buffering must reuse the in-flight complete-download job,
     // rather than fall back to a placeholder or a different voice.
-    if(s_turn.native_job[0] && !s_turn.native_claimed && muse_native_voice_rebind(previous,s_turn.gen))s_replaying=false;
+    if(s_turn.native_job[0] && !s_turn.native_claimed){
+        s_replaying=false;
+        if(!muse_native_voice_rebind(previous,s_turn.gen))s_turn.native_started=false;
+    }
     s_restart_wait=true;emit(MUSE_HATCH_EV_HEARD,"Restarting reply...");
 }
 static void handle(const cmd_t &cmd)

@@ -48,6 +48,7 @@
 #include "muse_settings_ui.h"
 #if CONFIG_MUSE_MODULE_LLM
 #include "muse_module_llm.h"
+#include "muse_native_voice.h"
 #include "muse_memory.h"
 #endif
 #include "muse_state.h"
@@ -817,6 +818,7 @@ static bool console_command(char *line, bool whole)
         muse_module_llm_status_t state;
         muse_module_llm_status(&state);
         unsigned baud,op,age,rx;muse_module_llm_diagnostic(&baud,&op,&age,&rx);printf("@uart {\"baud\":%u,\"op\":%u,\"age_ms\":%u,\"rx\":%u}\n",baud,op,age,rx);
+        muse_native_voice_status_t native;muse_native_voice_status(&native);printf("@native_voice {\"phase\":%u,\"received\":%u,\"total\":%u,\"elapsed_ms\":%u,\"error\":%u,\"active\":%s,\"job\":\"%s\"}\n",native.phase,native.received,native.total,native.elapsed_ms,native.error,native.active?"true":"false",native.job);
         printf("@voice {\"state\":%d,\"mic_active\":%s,\"mic_db\":%.1f,\"issued_generations\":%lu,\"last_error\":%d,\"frame_ms\":%d}\n",
                state.state, state.mic_active ? "true" : "false", (double)state.mic_db,
                (unsigned long)state.issued_generations, state.last_error, muse_board->frame_ms);

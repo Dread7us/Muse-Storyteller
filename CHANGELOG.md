@@ -1,5 +1,18 @@
 # Release history
 
+## 0.3.2 — recovery candidate
+
+- Resume interrupted native downloads, including partial caches from before a Module restart.
+- Reuse verified complete caches without uploading the same MP3 again.
+- Keep the selected Muse voice explicit: preparation failures show an error instead of silently speaking with Piper.
+- Give slow Muse replies time to create their audio, with progress and elapsed time visible.
+- Add an animated, skippable welcome screen throughout microphone/voice startup.
+- Preserve the original Muse MP3 and offer smaller 16 kHz mono delivery through the existing VM helper.
+- Speed up volume processing while preserving every sample and the existing rounding behavior.
+- Add regression checks for resume integrity, complete-cache reuse, volume math and compact delivery failure.
+
+Hardware validation is in progress on this candidate branch.
+
 ## 0.3.1
 
 - Fully download, hash-check and decode native Muse audio before speaking.

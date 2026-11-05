@@ -82,6 +82,16 @@ def split_phrases(text, limit=192):
     return result
 
 
+def _scale_pcm_fast(data,volume):
+    import numpy as np
+    values=np.frombuffer(data,dtype='<i2').astype(np.int32)
+    values*=volume
+    # Integer division must truncate toward zero, matching the original scaler.
+    np.add(values,99,out=values,where=values<0)
+    values//=100
+    return values.astype('<i2').tobytes()
+
+
 def scale_pcm(data, volume):
     if type(volume) is not int or not 0 <= volume <= 100:
         raise BridgeError(-2, "Volume must be an integer from 0 to 100")
@@ -89,6 +99,11 @@ def scale_pcm(data, volume):
         raise BridgeError(-3, "Invalid synthesized PCM size")
     if volume == 100:
         return data
+    if volume == 0:
+        return bytes(len(data))
+    if len(data)>=65536:
+        try:return _scale_pcm_fast(data,volume)
+        except (ImportError,MemoryError):pass
     samples = array.array("h")
     samples.frombytes(data)
     if sys.byteorder != "little":

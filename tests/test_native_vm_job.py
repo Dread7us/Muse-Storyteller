@@ -80,6 +80,21 @@ class Jobs(unittest.TestCase):
         (self.job/'source.md').write_bytes(b'x'*8193)
         with self.assertRaises(ValueError):self.run_job('/not/executed')
         self.assertFalse((self.job/'claimed').exists())
+    def test_compact_delivery_keeps_original_and_hashes_complete_output(self):
+        executable=self.fake('import sys\nsys.stdout.buffer.write(b"x"*2048)\n')
+        encoder=self.root/'encoder'
+        encoder.write_text('#!/usr/bin/python3\nfrom pathlib import Path\nimport sys\nPath(sys.argv[-1]).write_bytes(b"c"*1024)\n');encoder.chmod(0o700)
+        meta=self.run_job(executable,compact=True,ffmpeg=encoder)
+        self.assertEqual((self.job/'original.mp3').read_bytes(),b'x'*2048)
+        self.assertEqual((self.job/'audio.mp3').read_bytes(),b'c'*1024)
+        self.assertEqual(meta['audio_sha256'],hashlib.sha256(b'c'*1024).hexdigest())
+        self.assertEqual(meta['audio_bytes'],1024);self.assertEqual(meta['delivery_sample_rate'],16000)
+    def test_failed_compaction_never_publishes_partial_audio_as_complete(self):
+        executable=self.fake('import sys\nsys.stdout.buffer.write(b"x"*2048)\n')
+        encoder=self.root/'encoder';encoder.write_text('#!/usr/bin/python3\nimport sys\nsys.exit(1)\n');encoder.chmod(0o700)
+        with self.assertRaises(RuntimeError):self.run_job(executable,compact=True,ffmpeg=encoder)
+        self.assertEqual(json.loads((self.job/'meta.json').read_text())['state'],'error')
+        self.assertFalse((self.job/'audio.mp3').exists());self.assertEqual((self.job/'original.mp3').stat().st_size,2048)
 
 
 if __name__=='__main__':unittest.main()

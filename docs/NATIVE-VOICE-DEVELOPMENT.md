@@ -79,6 +79,21 @@ latency. See VALIDATION.md for measured reference results.
 
 ## Buffering and preparation time
 
+The 0.3.2 recovery candidate adds `--compact` to the VM helper. It preserves
+`original.mp3` and uses FFmpeg/libmp3lame to create a 32 kbps, 16 kHz mono
+`audio.mp3` for the Module's 16 kHz playback path. It publishes the delivery
+only after encoding completes, with a hash of the actual delivered bytes.
+This is an additional lossy encoding of the same voice; the original remains
+available. FFmpeg must be installed in the Muse VM. See its
+[audio option documentation](https://ffmpeg.org/ffmpeg.html#Audio-Options).
+
+Partial caches are untrusted until the Module verifies their complete MP3
+against the VM's final SHA-256. Resume does not permit partial playback.
+Selecting Muse voice no longer silently falls back to Piper on a preparation
+failure; Local voice remains a separate Sound setting. The candidate also
+shows live preparation progress and animates the welcome screen. Fresh-request
+hardware validation is required before promoting this candidate.
+
 Full buffering trades some initial preparation time for steady narration. A
 complete cached reply restarts without downloading or generating speech again.
 Audio is read from the Module's local cache; large replies need not stay entirely

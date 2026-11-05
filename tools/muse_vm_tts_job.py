@@ -56,7 +56,7 @@ def terminate(process):
 
 
 def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
-               deadline_seconds=180, normalize=None):
+               deadline_seconds=180, normalize=None,compact=False,ffmpeg="ffmpeg"):
     if not re.fullmatch(r"avocado_v2:[A-Za-z0-9_.-]{1,80}", voice):
         raise ValueError("Invalid voice identifier")
     if speed not in SPEEDS:
@@ -80,11 +80,12 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
             "audio_bytes": 0}
     started = time.monotonic()
     process = None
+    encoder = None
     digest = hashlib.sha256()
     total = 0
     try:
         atomic_json(job / "meta.json", meta)
-        with (job / "audio.mp3").open("xb") as audio:
+        with (job / ("original.mp3" if compact else "audio.mp3")).open("xb") as audio:
             process = subprocess.Popen(
                 [str(executable), "speak", "--text", spoken, "--voice", voice,
                  "--language", "en", "--speed", str(SPEEDS[speed]), "--stream"],
@@ -115,13 +116,26 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
                     if "first_byte_ms" not in meta:
                         meta["first_byte_ms"] = round((now-started)*1000)
                     if meta["state"] == "preparing" or now-last_update >= .5:
-                        meta.update(state="streaming", audio_bytes=total)
+                        meta.update(state="synthesizing" if compact else "streaming", audio_bytes=0 if compact else total)
+                        if compact:meta['original_audio_bytes']=total
                         atomic_json(job / "meta.json", meta)
                         last_update = now
             remaining = max(.1, deadline_seconds-(time.monotonic()-started))
             if process.wait(timeout=remaining) != 0 or total < 128:
                 raise RuntimeError("Muse synthesis did not produce usable audio")
             os.fsync(audio.fileno())
+        if compact:
+            meta.update(state='optimizing',original_audio_bytes=total);atomic_json(job/'meta.json',meta)
+            target=job/'delivery.pending.mp3'
+            encoder=subprocess.Popen([str(ffmpeg),'-nostdin','-v','error','-y','-i',str(job/'original.mp3'),
+                '-map','0:a:0','-vn','-ac','1','-ar','16000','-c:a','libmp3lame','-b:a','32k',
+                '-write_xing','0','-id3v2_version','0',str(target)],stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+            if encoder.wait(timeout=60)!=0:raise RuntimeError('Native delivery encoding failed')
+            encoded=target.read_bytes()
+            if not 128<=len(encoded)<=MAX_AUDIO:raise RuntimeError('Invalid native delivery encoding')
+            target.replace(job/'audio.mp3');total=len(encoded);digest=hashlib.sha256(encoded)
+            meta.update(delivery_bitrate=32000,delivery_sample_rate=16000)
         meta.update(state="complete", audio_bytes=total,
                     audio_sha256=digest.hexdigest(),
                     elapsed_ms=round((time.monotonic()-started)*1000))
@@ -130,6 +144,8 @@ def synthesize(job, voice, speed="normal", executable="/opt/hatch/bin/tts",
     except BaseException as error:
         if process is not None:
             terminate(process)
+        if encoder is not None:
+            terminate(encoder)
         # Never publish exception details, stderr, prompts or credentials.
         meta.update(state="error", audio_bytes=total,
                     error="timeout" if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)) else "synthesis_failed")
@@ -145,6 +161,7 @@ def main():
     parser.add_argument("job", help="24-character device-generated hexadecimal job ID")
     parser.add_argument("--voice", default="avocado_v2:MAI_03")
     parser.add_argument("--speed", choices=SPEEDS, default="normal")
+    parser.add_argument("--compact",action="store_true",help="Keep original audio and encode a smaller 16 kHz mono device delivery")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{24}", args.job):
         parser.error("Invalid device job ID")
@@ -152,7 +169,7 @@ def main():
     folder = root / args.job
     if folder.resolve().parent != root:
         parser.error("Job escapes the Muse Storyteller reply directory")
-    synthesize(folder, args.voice, args.speed)
+    synthesize(folder, args.voice, args.speed,compact=args.compact)
 
 
 if __name__ == "__main__":
