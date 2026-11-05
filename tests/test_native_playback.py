@@ -1,6 +1,7 @@
 import base64,hashlib,io,json,sys,tempfile,threading,types,unittest
 from pathlib import Path
 from unittest.mock import patch
+from concurrent.futures import Future
 try:import numpy
 except ImportError:pass
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'module/runtime'))
@@ -77,6 +78,14 @@ class TransferRetries(unittest.TestCase):
   packet['payload']=payload.replace('YWJj','YWI=')
   with self.assertRaises(native.NativeAudioError):checked_payload(packet)
   self.assertFalse(checked_payload(dict(op='begin',_transport_verified=True)).get('_transport_verified',False))
+ def test_service_close_preserves_prefix_and_releases_waiting_timing(self):
+  self.request('chunk',offset=0,audio=base64.b64encode(b'protected-prefix').decode())
+  item=self.store.items[self.key];future=item.timing_future
+  self.store.close()
+  self.assertEqual(item.mp3.read_bytes(),b'protected-prefix');self.assertTrue(item.error)
+  if not future.cancelled():
+   with self.assertRaises(native.NativeAudioError):future.result(3)
+  self.assertFalse((item.folder/'complete.json').exists())
 class CompleteCache(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.directory=Path(self.temp.name);self.text='The blue lantern glowed. The keeper came home.';self.key='1234567890abcdef12345678'
@@ -94,6 +103,18 @@ class CompleteCache(unittest.TestCase):
   player=Player();result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
   self.assertEqual(player.parts,[len(self.pcm)]);self.assertTrue(result['complete'])
   self.assertEqual(result['played_pcm_bytes'],len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
+ def test_failed_background_timing_still_plays_the_complete_clip(self):
+  item=self.store._load(self.key,self.text);item.timing_future=Future();item.timing_future.set_exception(RuntimeError('Analysis failed'))
+  player=Player();result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
+  self.assertEqual(result['played_pcm_bytes'],len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
+ def test_optional_cache_and_report_writes_cannot_fail_completed_audio(self):
+  original=Path.write_text
+  def full(path,*args,**kwargs):
+   if path.name in ('timing.pending','last-playback.json'):raise OSError('Cache unavailable')
+   return original(path,*args,**kwargs)
+  with patch.object(Path,'write_text',full):
+   player=Player();result=self.store.play(player,self.key,self.text,50,threading.Event(),None)
+  self.assertTrue(result['complete']);self.assertEqual(sum(player.parts),len(self.pcm));self.assertEqual(player.words[-1][2],len(self.text))
  def test_timing_analyzes_incomplete_windows_but_publishes_only_after_integrity(self):
   (self.folder/'complete.json').unlink();seen=threading.Event()
   class Aligner:

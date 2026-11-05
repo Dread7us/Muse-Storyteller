@@ -155,9 +155,12 @@ class Store:
     item.file.close();item.decoder.stdin.close();item.decoder.wait(timeout=8)
     if item.mp3.stat().st_size!=item.received or hashlib.sha256(item.mp3.read_bytes()).hexdigest()!=data.get('sha256'):item.error='Native cache write integrity failed';raise NativeAudioError(item.error)
     if item.decoder.returncode or item.size()<320: item.error='Native audio decoding failed';raise NativeAudioError(item.error)
-    item.done=True
     meta={'source_sha256':hashlib.sha256(item.text.encode()).hexdigest(),'audio_bytes':item.received,'audio_sha256':item.digest.hexdigest(),'pcm_bytes':item.size(),'transport_integrity':int(getattr(item,'integrity',False))}
-    target=item.folder/'complete.json';temp=target.with_suffix('.pending');temp.write_text(json.dumps(meta));temp.replace(target)
+    try:
+     target=item.folder/'complete.json';temp=target.with_suffix('.pending');temp.write_text(json.dumps(meta));temp.replace(target)
+    except OSError:
+     item.error='Native cache finalization failed';raise NativeAudioError(item.error)
+    item.done=True
     return {'received':item.received}
    raise NativeAudioError('Unknown native audio operation')
  def _load(self,key,text):
@@ -247,8 +250,26 @@ class Store:
   else:
    pcm=item.pcm.read_bytes();timing=WordTiming(item.text);schedule=timing.phrase(timing.normalized,pcm)
   check_cancel(cancel)
-  temporary=cache.with_suffix('.pending');temporary.write_text(json.dumps({'version':2,'source':signature,'pcm_bytes':size,'aligned':good,'words':schedule}));temporary.replace(cache)
+  try:
+   temporary=cache.with_suffix('.pending');temporary.write_text(json.dumps({'version':2,'source':signature,'pcm_bytes':size,'aligned':good,'words':schedule}));temporary.replace(cache)
+  except OSError:print(json.dumps({'phase':'timing_cache_unavailable','audio_preserved':True}),flush=True)
   return schedule
+ def _fallback_schedule(self,item,cancel):
+  from muse_voice_backend import check_cancel
+  from muse_word_timing import WordTiming
+  check_cancel(cancel)
+  if not item.done or item.error:raise NativeAudioError('Complete native audio is unavailable')
+  pcm=item.pcm.read_bytes();timing=WordTiming(item.text)
+  return timing.phrase(timing.normalized,pcm)
+ def close(self):
+  # Do not strand an analysis worker waiting for the end of an interrupted
+  # upload during a service restart. Keep its protected MP3 prefix on disk.
+  with self.lock:
+   for item in self.items.values():
+    if not item.done:item.abort()
+    future=getattr(item,'timing_future',None)
+    if future:future.cancel()
+  self.pool.shutdown(wait=False)
  def play(self,backend,key,text,volume,cancel,on_play):
   from muse_voice_backend import check_cancel
   with self.lock:
@@ -268,10 +289,19 @@ class Store:
    size=item.size()
    if size<320 or size%2 or size>32*1024*1024:raise NativeAudioError('Invalid complete decoded audio')
    prepared=getattr(item,'timing_future',None)
-   if prepared is not None:
-    while not prepared.done():check_cancel(cancel);time.sleep(.025)
-    schedule=prepared.result()
-   else:schedule=self._schedule(item,cancel)
+   try:
+    if prepared is not None:
+     timing_deadline=time.monotonic()+15
+     while not prepared.done():
+      check_cancel(cancel)
+      if time.monotonic()>timing_deadline:raise NativeAudioError('Word timing is taking too long')
+      time.sleep(.025)
+     schedule=prepared.result()
+    else:schedule=self._schedule(item,cancel)
+   except Exception:
+    check_cancel(cancel)
+    print(json.dumps({'phase':'timing_fallback','audio_preserved':True}),flush=True)
+    schedule=self._fallback_schedule(item,cancel)
    # Fit the native IPC budget. Prefer complete sentence endings only for
    # exceptionally long replies; ordinary replies play in a single native call.
    maximum=5*1024*1024;position=0
@@ -289,7 +319,8 @@ class Store:
      total+=len(pcm);blocks+=1;position=end
    if total!=size:raise NativeAudioError('Not all cached audio was played')
    result={'pcm_bytes':size,'played_pcm_bytes':total,'blocks':blocks,'complete':True,'words':len(schedule)}
-   (item.folder/'last-playback.json').write_text(json.dumps(result))
+   try:(item.folder/'last-playback.json').write_text(json.dumps(result))
+   except OSError:print(json.dumps({'phase':'playback_report_unavailable','audio_complete':True}),flush=True)
    return result
   finally:
    with self.lock:self.active.discard(key)

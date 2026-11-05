@@ -2648,7 +2648,8 @@ static void update_status(muse_mode_t mode, float now)
     muse_module_llm_status_t playback_status;muse_module_llm_status(&playback_status);
     muse_native_voice_status_t native;muse_native_voice_status(&native);
     if(native.active && mode==MUSE_MODE_THINKING){
-        if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
+        if(native.phase==7)snprintf(preparing_label,sizeof(preparing_label),"RECOVERING VOICE %u/2",native.recoveries);
+        else if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
         else if(native.phase==3)snprintf(preparing_label,sizeof(preparing_label),"CHECKING AUDIO");
         else snprintf(preparing_label,sizeof(preparing_label),"CREATING VOICE %us",native.elapsed_ms/1000);
         name=preparing_label;

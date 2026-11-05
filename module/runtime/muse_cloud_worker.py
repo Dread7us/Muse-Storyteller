@@ -49,3 +49,4 @@ class CloudWorker:
         # Router teardown must not acknowledge a still-running speaker.
         self.jobs.put(None)
         self.thread.join(timeout=12)
+        self.store.close()

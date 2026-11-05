@@ -370,7 +370,10 @@ class Engine:
                 except Exception:
                     with self.lock:
                         self.ready = False
-                        self.failure = BridgeError(-31, "Local speech cleanup did not complete")
+                        # A secondary cleanup error must not hide the original
+                        # initialization/worker fault needed for recovery.
+                        if self.failure is None:self.failure = BridgeError(-31, "Local speech cleanup did not complete")
+                        print(json.dumps(dict(phase='cleanup_failed',error_code=-31,original_error_code=self.failure.code)),flush=True)
 
     def shutdown(self):
         self.stop.set()

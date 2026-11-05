@@ -1,4 +1,4 @@
-import ast,threading,time,types,unittest
+import ast,threading,time,types,unittest,json
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 def method(file,cls,name):
@@ -6,6 +6,14 @@ def method(file,cls,name):
 class Error(Exception):
  def __init__(self,code,message):self.code,self.message=code,message
 class Ready(unittest.TestCase):
+ def test_secondary_cleanup_error_does_not_hide_the_original_fault(self):
+  fn=method(root/'module/runtime/muse_voice_bridge.py','Engine','run');fn.__globals__.update(json=json)
+  original=Error(-10,'Audio unavailable')
+  class Backend:
+   def initialize(self):raise original
+   def close(self):raise Error(-31,'Cleanup failed')
+  obj=types.SimpleNamespace(backend_factory=Backend,lock=threading.RLock(),ready=False,failure=None,current=None,pending=None)
+  fn(obj);self.assertIs(obj.failure,original);self.assertFalse(obj.ready)
  def test_false_health_never_emits_ready(self):
   fn=method(root/'module/runtime/muse_voice_bridge.py','Engine','ready_event');events=[];obj=types.SimpleNamespace(backend=types.SimpleNamespace(startup_health=lambda:False),fail=lambda req,e:events.append(e.code),send=lambda *a,**k:self.fail('False readiness emitted'))
   fn(obj,{});self.assertEqual(events,[-23])

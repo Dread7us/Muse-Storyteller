@@ -93,6 +93,7 @@ static int read_file(const char *name,size_t offset,uint8_t *out,size_t cap,size
 
 static char rpc_id[64],rpc_session[9];
 static bool rpc_waiting,rpc_done,rpc_ok;
+static int rpc_error;
 static size_t rpc_received;
 static bool rpc_complete;
 static char rpc_hash[65];
@@ -109,6 +110,7 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
     portENTER_CRITICAL(&lock);
     if(rpc_waiting && !strcmp(id,rpc_id) && owner && !strcmp(owner,rpc_session) && !strcmp(owner,session)){
         rpc_ok=event&&!strcmp(event,"cloud")&&cJSON_IsNumber(code)&&code->valuedouble==0;
+        rpc_error=cJSON_IsNumber(code)?code->valueint:-99;
         const cJSON *result=cJSON_GetObjectItemCaseSensitive(data,"result");
         double received=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(result,"received"));
         if(received>=0 && received<=32*1024*1024 && received==(size_t)received)rpc_received=(size_t)received;
@@ -138,7 +140,7 @@ static bool rpc_once(cJSON *data,bool cleanup){
     cJSON_AddStringToObject(data,"session",owner);cJSON_AddNumberToObject(data,"generation",0);
     cJSON_AddItemToObject(root,"data",data);
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);cJSON_free(payload);if(!json)return false;
-    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
+    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
     bool sent=muse_module_llm_send_line(json);cJSON_free(json);
     int64_t until=now()+10000000;bool done=false,ok=false;
     while(sent&&now()<until&&(cleanup||!stopped())){
@@ -159,7 +161,11 @@ static bool rpc(cJSON *data,bool cleanup=false){
             portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
             if(!expected_received || acknowledged==expected_received){ok=true;break;}
         }
-        if(!cleanup)pause_ms(200*(attempt+1));
+        if(!cleanup){
+            portENTER_CRITICAL(&lock);int code=rpc_error;size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
+            printf("@native_rpc {\"op\":\"%s\",\"attempt\":%u,\"code\":%d,\"received\":%u,\"expected\":%u}\n",op?op:"unknown",attempt+1,code,(unsigned)acknowledged,(unsigned)expected_received);fflush(stdout);
+            pause_ms(500*(attempt+1));
+        }
     }
     cJSON_Delete(data);return ok;
 }
@@ -169,19 +175,19 @@ static bool hex_digest(const uint8_t *data,size_t length,char out[65]){
     for(unsigned i=0;i<32;i++){snprintf(out+2*i,3,"%02x",digest[i]);}
     return true;
 }
-static void worker(void *){
+static bool transfer_once(unsigned &stage,bool &retryable){
     bool ready=false,complete=false;
-    uint8_t block[4097];size_t count=0,offset=0;unsigned stage=0;
+    uint8_t block[4097];size_t count=0,offset=0;stage=0;retryable=true;
     char expected_source[65]={},expected_audio[65]={};
     size_t source_bytes=0,audio_bytes=0;
     int64_t until=now()+720000000;
     // Metadata must describe the exact immutable script, never a guessed caption.
     while(now()<until&&!stopped()){
         portENTER_CRITICAL(&lock);int64_t answered=answer_ready_us;portEXIT_CRITICAL(&lock);
-        if(answered && now()-answered>90000000){phase(5,2);break;}
+        bool answer_timeout=answered && now()-answered>90000000;
         int status=read_file("meta.json",0,block,4096,count);
-        if(status==404){pause_ms(250);continue;}
-        if(status!=200&&status!=206){phase(5,1);printf("@native_transfer {\"stage\":\"metadata\",\"status\":%d}\n",status);fflush(stdout);break;}
+        if(status==404){if(answer_timeout){retryable=false;break;}pause_ms(250);continue;}
+        if(status!=200&&status!=206){retryable=status!=401&&status!=403;printf("@native_transfer {\"stage\":\"metadata\",\"status\":%d}\n",status);fflush(stdout);break;}
         block[count]=0;cJSON *m=cJSON_Parse((char *)block);
         const char *phase=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"state"));
         const char *hash=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"source_sha256"));
@@ -200,7 +206,9 @@ static void worker(void *){
             }
         }
         bool error=(phase&&!strcmp(phase,"error"))||(phase&&!identity);cJSON_Delete(m);
+        if(error)retryable=false;
         if(ready||error){break;}
+        if(answer_timeout){retryable=false;break;}
         pause_ms(150);
     }
     if(ready){stage=1;
@@ -210,7 +218,9 @@ static void worker(void *){
             memcpy(script+at,block,count);at+=count;
         }
         script[at]=0;char actual[65];
+        bool fetched=ready;
         ready=ready&&at==source_bytes&&!memchr(script,0,at)&&hex_digest((uint8_t *)script,at,actual)&&!strcmp(actual,expected_source);
+        if(fetched&&!ready)retryable=false; // a different script is not a reconnect
     }
     psa_hash_operation_t digest=PSA_HASH_OPERATION_INIT;if(psa_hash_setup(&digest,PSA_ALG_SHA_256)!=PSA_SUCCESS)ready=false;
     if(ready&&!stopped()){stage=2;
@@ -222,7 +232,7 @@ static void worker(void *){
         if(resume>32*1024*1024 || (audio_bytes && resume>audio_bytes))ready=false;
         else if(cached){
             ready=audio_bytes && resume==audio_bytes && !strcmp(cached_hash,expected_audio);
-            if(ready){buffered(resume,audio_bytes);phase(4);state.store(1);psa_hash_abort(&digest);running.store(false);vTaskDeleteWithCaps(nullptr);return;}
+            if(ready){buffered(resume,audio_bytes);phase(4);state.store(1);psa_hash_abort(&digest);return true;}
         }
         offset=resume;buffered(offset,audio_bytes);phase(2);
     }
@@ -254,7 +264,7 @@ static void worker(void *){
         double bytes=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"audio_bytes"));
         if(phase&&!strcmp(phase,"complete")&&hash&&strlen(hash)==64&&bytes>=128&&bytes<=32*1024*1024&&bytes==(size_t)bytes){audio_bytes=(size_t)bytes;strlcpy(expected_audio,hash,65);complete=offset==audio_bytes;buffered(offset,audio_bytes);}
         bool error=phase&&!strcmp(phase,"error");cJSON_Delete(m);
-        if(complete||error){if(error)ready=false;break;}pause_ms(100);
+        if(complete||error){if(error){ready=false;retryable=false;}break;}pause_ms(100);
     }
     if(ready&&complete&&!stopped()){stage=4;
         phase(3);uint8_t binary[32]={};char actual[65];strlcpy(actual,expected_audio,sizeof(actual));size_t written=0;
@@ -268,7 +278,34 @@ static void worker(void *){
         if(ready){cJSON *d=operation("end");cJSON_AddNumberToObject(d,"bytes",audio_bytes);cJSON_AddStringToObject(d,"sha256",actual);ready=rpc(d);if(ready){phase(4);state.store(1);}}
     }else ready=false;
     psa_hash_abort(&digest);
-    if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);printf("@native_transfer {\"failed_stage\":%u,\"received_bytes\":%u,\"cancelled\":%s}\n",stage,(unsigned)offset,stopped()?"true":"false");fflush(stdout);rpc(operation("abort"),true);if(!stopped())state.store(-1);}
+    if(!ready){printf("@native_transfer {\"failed_stage\":%u,\"received_bytes\":%u,\"cancelled\":%s,\"retryable\":%s}\n",stage,(unsigned)offset,stopped()?"true":"false",retryable?"true":"false");fflush(stdout);rpc(operation("abort"),true);}
+    return ready;
+}
+static void worker(void *){
+    unsigned stage=0;bool retryable=true,ready=false;
+    const int64_t recovery_deadline=now()+360000000;
+    for(unsigned attempt=0;attempt<3&&!stopped();attempt++){
+        if(attempt){
+            portENTER_CRITICAL(&lock);progress.recoveries=attempt;portEXIT_CRITICAL(&lock);
+            phase(7,stage+1);
+            printf("@native_recovery {\"attempt\":%u,\"stage\":%u}\n",attempt,stage);fflush(stdout);
+            // Rejoin the existing paired Module session. Never reboot the
+            // device or request synthesis again. A new begin discovers the
+            // receiver's verified prefix, including after a Module restart.
+            int64_t wait_until=now()+90000000;
+            pause_ms(1000*attempt);
+            while(now()<wait_until&&now()<recovery_deadline&&!stopped()){
+                muse_module_llm_status_t st;muse_module_llm_status(&st);
+                if(st.state==MUSE_MODULE_LLM_READY&&muse_link_req_ready())break;
+                pause_ms(100);
+            }
+        }
+        if(stopped() || (attempt&&now()>=recovery_deadline))break;
+        phase(attempt?7:1);
+        ready=transfer_once(stage,retryable);
+        if(ready||!retryable)break;
+    }
+    if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);if(!stopped())state.store(-1);}
     running.store(false);vTaskDeleteWithCaps(nullptr);
 }
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
