@@ -293,3 +293,14 @@ present. The tablet and Module stayed connected to the pre-existing ADB server,
 and the SuperDisplay Windows service remained running. No ADB restart, tablet
 routing change or NVS erase was performed. Private clips, device reports,
 account state, archive backups and rejected candidate binaries remain unpublished.
+
+A follow-up GitHub run exposed an intermittent failure in the shell-command-based
+startup claim. Trace output showed multiple callers proceeding past the claim
+in that runner environment. The wrapper now uses Python's direct atomic
+`os.mkdir` call instead of depending on the platform `mkdir` utility's exit
+behavior. The Linux test repeats twelve concurrent starts over twenty fresh
+lock directories (240 calls), with diagnostic traces retained on failure. All
+51 checks passed with this implementation. The reference Module received the
+boot-only wrapper after a silent isolated first/repeat check; no service restart
+or device reboot was requested for this follow-up. Its next cold boot was not
+part of that follow-up verification.
