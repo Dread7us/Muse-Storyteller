@@ -11,9 +11,10 @@ class Chime(unittest.TestCase):
    player.write_text('#!/bin/sh\nprintf "played\\n" >> "'+str(events)+'"\n');player.chmod(0o700)
    helper.write_text(source.read_text().replace('/run/muse-startup-chime.once',str(root/'once')).replace('exec tinyplay','exec "'+str(player)+'"'))
    with ThreadPoolExecutor(max_workers=8) as pool:
-    jobs=[pool.submit(subprocess.run,['/bin/sh',str(helper)],check=True) for _ in range(12)]
+    jobs=[pool.submit(subprocess.run,['/bin/sh','-x',str(helper)],check=True,capture_output=True,text=True) for _ in range(12)]
     for job in jobs:job.result()
-   self.assertEqual(events.read_text(),'played\n')
+   results=[job.result() for job in jobs]
+   self.assertEqual(events.read_text(),'played\n','\n'.join(result.stderr for result in results))
    self.assertEqual(os.stat(root/'once').st_mode & 0o170000,0o040000)
 
 if __name__=='__main__':unittest.main()
