@@ -35,7 +35,7 @@ static void expired(lv_timer_t *timer){
     muse_module_llm_status_t st;muse_module_llm_status(&st);
     bool ready=st.state==MUSE_MODULE_LLM_READY;
     if(s_loading&&!s_preview){
-        char text[64];if(ready)strlcpy(text,"Microphone and voice ready",sizeof(text));else snprintf(text,sizeof(text),"Starting microphone and voice  |  %us",elapsed/1000);
+        char text[64];if(ready)strlcpy(text,"Microphone and voice ready",sizeof(text));else snprintf(text,sizeof(text),"Starting microphone and voice  |  %us",(unsigned)(elapsed/1000));
         if(strcmp(lv_label_get_text(s_loading),text))lv_label_set_text(s_loading,text);
     }
     /* Splash is skippable; leaving it never claims voice readiness. */

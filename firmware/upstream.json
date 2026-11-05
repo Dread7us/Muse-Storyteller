@@ -216,7 +216,7 @@
     },
     "esp32/components/muse/muse_startup.c": {
       "base_sha256": null,
-      "overlay_sha256": "94753c1b0911eb0230259eb0e37f75125b56367bb802ac6a8f948de312d16d86"
+      "overlay_sha256": "53f4e3be2fd44f56f960ccc8210bedb83ea10ca7e68de16263c467cce33aa2be"
     },
     "esp32/components/muse/muse_splash_art.c": {
       "base_sha256": null,
