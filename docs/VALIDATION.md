@@ -304,3 +304,31 @@ lock directories (240 calls), with diagnostic traces retained on failure. All
 boot-only wrapper after a silent isolated first/repeat check; no service restart
 or device reboot was requested for this follow-up. Its next cold boot was not
 part of that follow-up verification.
+
+## Edition 0.3.5 reply delivery
+
+A harmless delayed-tool test reproduced the missing-result bug: the initial
+acknowledgement arrived through live deltas, but the saved final message used a
+lower chat-event sequence than the most recent live status. Comparing those
+different sequence spaces incorrectly discarded the completed result.
+
+The fix keeps persisted assistant messages out of the live-event replay filter.
+Authoritative messages remain deduplicated by message ID and final text, and
+changed final text remains eligible for playback. Running work is retained beyond
+the old short acknowledgement timeout; task failure and the overall deadline
+are reported explicitly.
+
+Fifteen native tests exercise the production event dispatch, task lifecycle,
+structured final text, revisions and playback completion. They passed on the
+Module and in the 66-test Linux suite. In the physical reference check, a request
+containing an intentional 35-second tool delay delivered both the acknowledgement
+and final result. Both native clips downloaded successfully; playback reached the
+last word of the final result and the turn completed with two messages. The final
+result was also verified in the local archive.
+
+Pause/Resume, Stop, Restart, Settings and reader resizing passed against the repaired
+reply. Application-only write/digest verification, a healthy UI heartbeat, retained
+voice/volume settings and read-only archive integrity checks passed. Original
+archive entries were preserved. No ADB restart, SuperDisplay change, pairing reset,
+Module service restart or NVS erase was used. Private task confirmations and
+diagnostic captures are excluded from the public repository.
