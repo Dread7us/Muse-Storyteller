@@ -12,11 +12,12 @@ def repeated_speech(expected,heard):
     return False
 
 class SpeechCheck:
-    def __init__(self,model_path):
+    def __init__(self,model_path,alignment_path=None):
         from faster_whisper import WhisperModel
-        from faster_whisper.tokenizer import Tokenizer
         self.model=WhisperModel(str(model_path),device='cpu',compute_type='int8',cpu_threads=2,num_workers=1,local_files_only=True)
-        self.tokenizer=Tokenizer(self.model.hf_tokenizer,self.model.model.is_multilingual,task='transcribe',language='en')
+        from pathlib import Path
+        from muse_ctc_alignment import AcousticAligner
+        self.acoustic=AcousticAligner(alignment_path or Path(model_path).parent/'ctc-english')
         self.lock=threading.Lock()
     def check(self,pcm,text,first_word=0):
         import numpy as np
@@ -34,24 +35,9 @@ class SpeechCheck:
             expected_tokens=lexical(text);heard_tokens=lexical(normalized_heard)
             agreement=difflib.SequenceMatcher(None,expected_tokens,heard_tokens,autojunk=False).ratio()
             if repeated_speech(text,normalized_heard) or agreement<.55:raise ValueError('Generated speech differs from its text')
-            last=None
-            for lead,tail in ((0.,0.),(.24,.48),(.5,.8)):
-                padded=np.pad(audio,(round(lead*16000),round(tail*16000)))
-                features=self.model.feature_extractor(padded)
-                frames=min(3000,features.shape[-1],round(len(padded)/160))
-                encoded=self.model.encode(features[:,:3000])
-                # Whisper emits a leading space before English transcript
-                # tokens. Omitting it can suppress the first token and squeeze
-                # a later word into a zero-length boundary. Narrower attention
-                # filters are real re-alignment attempts, never guessed times.
-                tokens=self.tokenizer.encode(' '+text.lstrip())
-                for width in (7,3,1,11):
-                    aligned=self.model.find_alignment(self.tokenizer,[tokens],encoded,frames,median_filter_width=width)[0]
-                    try:
-                        result=word_anchors(aligned,text,duration,first_word,lead)
-                        return dict(aligned=True,words=result,agreement=round(agreement,4),pcm_samples=len(audio),alignment_padding=lead,alignment_filter=width)
-                    except ValueError as exc:last=exc
-            raise last
+            words,confidence=self.acoustic.align(audio,text,first_word)
+            return dict(aligned=True,words=words,agreement=round(agreement,4),pcm_samples=len(audio),
+                        alignment_method='ctc-english',acoustic_confidence=confidence,alignment_padding=0.,alignment_filter=0)
 
 def word_anchors(aligned,text,duration,first_word=0,lead=0.):
         located=[];cursor=0;probabilities=[]
