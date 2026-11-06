@@ -32,6 +32,8 @@ static const char *cJSON_GetStringValue(cJSON *p){return p&&p->type==1?p->value.
 static bool cJSON_IsArray(cJSON *p){return p&&p->type==2;}
 static int cJSON_GetArraySize(cJSON *p){return p?(int)p->items.size():0;}
 static cJSON *cJSON_GetArrayItem(cJSON *p,int i){return p&&i>=0&&i<(int)p->items.size()?p->items[i]:nullptr;}
+#define strlcpy test_strlcpy
+#define strlcat test_strlcat
 static size_t strlcpy(char *out,const char *in,size_t cap){size_t n=strlen(in);if(cap){size_t k=n<cap-1?n:cap-1;memcpy(out,in,k);out[k]=0;}return n;}
 static size_t strlcat(char *out,const char *in,size_t cap){size_t n=strlen(out);return n+strlcpy(out+n,in,cap-n);}
 ''' + tracking + r'''
