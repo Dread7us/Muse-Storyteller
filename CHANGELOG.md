@@ -4,6 +4,7 @@
 
 - Fix Restart after a failed or cancelled direct download by binding healthy work to the new playback generation, or fetching the same existing response afresh when the old job failed.
 - Send verified audio blocks as single-layer base64 JSON packets, avoiding the vendor binary RAW framing path that stalled during a longer real reply.
+- Escape literal braces inside ordinary JSON strings without changing their decoded text, and clear accumulated parser nesting left by interrupted binary traffic.
 - Recover a lost packet before retrying the same offset, with at most two transfer recoveries; coordinate recovery on the UART operation owner so capture, playback, Recorder and queued user actions take priority.
 - Keep per-block integrity, duplicate checks, final-file hashing and decoder success mandatory before native playback.
 - Distinguish cache, connection, download, transfer and final-check failures on screen. Stop automatic retries on access refusal.

@@ -61,7 +61,10 @@ Identical acknowledged blocks can be retried safely. Failure keeps the text and
 offers Restart, with separate cache, connection, download, transfer and final-check
 messages. A failed direct job is replaced on Restart; a healthy running job is
 rebound to the new playback generation. Text/control packets retain their protected
-ASCII envelope.
+ASCII envelope. Ordinary JSON strings escape literal braces as Unicode escapes,
+preserving their decoded text while keeping quoted code out of the vendor's brace
+counter. Recovery also clears accumulated nesting left by damaged legacy binary
+traffic; it does not erase pairing, voice settings or archived conversations.
 This requires the matching Core2 firmware and Module bridge. Optional timing
 runs on one low-priority CPU thread so it cannot monopolize both Module cores.
 

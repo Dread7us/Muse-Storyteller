@@ -44,8 +44,29 @@ static SemaphoreHandle_t s_tx_mutex;
 static char s_cloud_session[9];
 static unsigned s_recovery_seq,s_recovery_request,s_recovery_done;
 static bool s_recovery_ok;
+static const char *uart_safe_json(const char *json,char **owned){
+    *owned=NULL;size_t extra=0;bool quoted=false,escaped=false;
+    for(const char *p=json;*p;p++){
+        if(quoted){if(*p=='{'||*p=='}')extra++;
+            if(escaped)escaped=false;else if(*p=='\\')escaped=true;else if(*p=='"')quoted=false;
+        }else if(*p=='"')quoted=true;
+    }
+    if(!extra)return json;
+    size_t n=strlen(json);char *safe=heap_caps_malloc(n+5*extra+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!safe)return NULL;
+    char *out=safe;quoted=escaped=false;
+    for(const char *p=json;*p;p++){
+        if(quoted&&(*p=='{'||*p=='}')){memcpy(out,*p=='{'?"\\u007b":"\\u007d",6);out+=6;}
+        else *out++=*p;
+        if(quoted){if(escaped)escaped=false;else if(*p=='\\')escaped=true;else if(*p=='"')quoted=false;}
+        else if(*p=='"')quoted=true;
+    }
+    *out=0;*owned=safe;return safe;
+}
 bool muse_module_llm_send_line(const char *json){
     if(!s_tx_mutex || !json)return false;
+    char *owned=NULL;const char *safe=uart_safe_json(json,&owned);if(!safe)return false;
+    json=safe;
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);size_t n=strlen(json);
     bool ok=true;
     // The Module's UART has no hardware flow control. Give its receive path
@@ -56,7 +77,7 @@ bool muse_module_llm_send_line(const char *json){
         if(ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
     }
     if(ok)ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
-    xSemaphoreGive(s_tx_mutex);return ok;
+    xSemaphoreGive(s_tx_mutex);free(owned);return ok;
 }
 void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
 bool muse_module_llm_test_framing_stall(void){
@@ -93,9 +114,11 @@ static void recover_uart_framing(void){
             uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,zeros,sizeof(zeros));
             uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(1);
         }
-        for(unsigned i=0;i<3;i++){
+        // A damaged binary header can expose MP3 bytes to the brace counter.
+        // Clear accumulated nesting too, not only a two-level partial request.
+        for(unsigned i=0;i<64;i++){
             uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"}\n",2);
-            uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(pdMS_TO_TICKS(20));
+            if(i%16==15){uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(1);}
         }
     }
     xSemaphoreGive(s_tx_mutex);

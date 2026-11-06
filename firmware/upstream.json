@@ -72,7 +72,7 @@
     },
     "esp32/components/muse/muse_module_llm.c": {
       "base_sha256": null,
-      "overlay_sha256": "d2e06636358c0626ec247e9fdcf0f2b6f72a4af705022f57942c3dd751d3e219"
+      "overlay_sha256": "b2649b1c691f5a2674e8294e3b5809dd88fdc324509161ecc85488d725e725b5"
     },
     "esp32/components/muse/muse_module_llm.h": {
       "base_sha256": null,
