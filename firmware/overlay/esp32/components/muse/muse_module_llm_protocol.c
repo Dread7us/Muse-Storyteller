@@ -282,7 +282,7 @@ bool muse_llm_bridge_event(const muse_llm_reply_t *reply, const char *session, c
     const char *reply_session = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reply->data, "session"));
     const char *name = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reply->data, "event"));
     if (!session_valid(session) || !reply_session || strcmp(reply_session, session) || !name) return false;
-    static const char *const names[] = {"ready", "listening", "accepted", "speaking", "transcript", "done", "cancelled", "error", "level", "word", "playback"};
+    static const char *const names[] = {"ready", "listening", "accepted", "speaking", "transcript", "done", "cancelled", "error", "level", "word", "playback", "buffering"};
     unsigned kind;
     for (kind = 0; kind < sizeof(names) / sizeof(names[0]); kind++) if (!strcmp(name, names[kind])) break;
     if (kind == sizeof(names) / sizeof(names[0]) ||

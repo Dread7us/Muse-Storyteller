@@ -56,7 +56,7 @@ static char s_final_reply[TEXT_MAX];
 static int64_t s_last_seq=0;
 static int s_pending_reply_msg=-1;
 static bool s_bench_reply=false,s_can_restart=false,s_playback_active=false;
-static bool s_restart_wait=false,s_transport_pending=false,s_replaying=false,native_rebind_ok=false;
+static bool s_restart_wait=false,s_transport_pending=false,s_replaying=false,native_rebind_ok=false,sections_pending=false;
 static unsigned s_gen=1,rebound_previous=0,rebound_current=0;
 static char s_reply_shown[128];
 static int64_t clock_us=0;
@@ -76,13 +76,14 @@ static unsigned muse_conversation_add(bool,const char*){return ++conversations;}
 static unsigned muse_conversation_add_transient(bool,const char*){return ++conversations;}
 static void muse_native_voice_answer_ready(unsigned,bool){}
 static void muse_native_voice_cancel(){cancels++;}
+static bool muse_native_voice_has_pending_sections(){return sections_pending;}
 static bool muse_native_voice_rebind(unsigned previous,unsigned current){rebound_previous=previous;rebound_current=current;return native_rebind_ok;}
 static void muse_module_llm_cancel(unsigned){}
 static void drain_out(){}
 static void append_text(msg_t &m,const char *text){m.len+=strlen(text);strlcat(s_turn.texts+(&m-s_turn.msgs)*TEXT_MAX,text,TEXT_MAX);strlcat(m.tail,text,sizeof(m.tail));}
 static void show_reply_start(const msg_t&){}
 ''' + binding + final + done + events + restart + check + '\nstatic void drain(int playback){\n'+drain+'\n}\n'+r'''
-static void reset(){s_turn=turn_t{};memset(text_storage,0,sizeof(text_storage));s_turn.texts=text_storage;clock_us=0;failure.clear();completed=false;conversations=cancels=0;s_pending_reply_msg=-1;s_last_seq=0;s_gen=1;native_rebind_ok=false;s_can_restart=false;s_restart_wait=false;s_transport_pending=false;s_replaying=false;rebound_previous=rebound_current=0;}
+static void reset(){s_turn=turn_t{};memset(text_storage,0,sizeof(text_storage));s_turn.texts=text_storage;clock_us=0;failure.clear();completed=false;conversations=cancels=0;s_pending_reply_msg=-1;s_last_seq=0;s_gen=1;native_rebind_ok=false;sections_pending=false;s_can_restart=false;s_restart_wait=false;s_transport_pending=false;s_replaying=false;rebound_previous=rebound_current=0;}
 static void incoming(const char *kind,int seq,const char *id,const char *text){auto *line=object(),*p=object(),*n=object();n->type=3;n->valuedouble=seq;line->fields["seq"]=n;line->fields["type"]=str("event");line->fields["event"]=str(kind);line->fields["payload"]=p;p->fields["message_id"]=str(id);p->fields["display_text"]=str(text);p->fields["text"]=str(text);on_event(line);}
 static void ack(){strcpy(text_storage,"I am working.");s_turn.msgs[0].done=true;s_turn.msgs[0].len=strlen(text_storage);s_turn.msgs[0].tts=TTS_FINISHED;}
 static void work(bool task,const char *id,const char *status,const char *activity=nullptr,bool linked=false){task_progress_update(s_turn.task_progress,task,id,status,activity,linked);s_turn.agent_busy=task_progress_busy(s_turn.task_progress);}
@@ -106,6 +107,7 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];reset();
  else if(c=="buffered_direct_restart"){ack();s_can_restart=true;s_turn.native_direct=s_turn.native_started=true;native_rebind_ok=true;restart_reply();assert(s_turn.native_started&&rebound_previous==1&&rebound_current==2&&s_turn.gen==2);}
  else if(c=="cached_direct_restart"){ack();s_can_restart=true;s_turn.native_direct=true;strcpy(s_turn.msgs[0].external_key,"verified-cache");restart_reply();assert(!strcmp(s_turn.msgs[0].external_key,"verified-cache")&&s_turn.msgs[0].tts==TTS_QUEUED&&!rebound_previous);}
  else if(c=="legacy_restart"){ack();s_can_restart=true;s_turn.native_started=true;strcpy(s_turn.native_job,"legacy-job");restart_reply();assert(!s_turn.native_started&&!s_replaying&&s_turn.gen==2);}
+ else if(c=="section_restart"){ack();s_can_restart=true;sections_pending=true;s_turn.native_claimed=true;strcpy(s_turn.native_job,"section-job");strcpy(s_turn.msgs[0].external_key,"partial-cache");restart_reply();assert(s_turn.gen==2&&!s_turn.native_claimed&&!s_turn.native_started&&!s_replaying&&!s_turn.msgs[0].external_key[0]&&s_restart_wait&&cancels==1);}
  else assert(false);
 }
 '''
@@ -119,6 +121,7 @@ class TaskLifecycle(unittest.TestCase):
         result=subprocess.run([cls.compiler,'-std=c++17','-O0',str(source),'-o',str(cls.exe)],capture_output=True,text=True)
         if result.returncode:raise RuntimeError(result.stderr)
     def run_case(self,name):subprocess.run([str(self.exe),name],check=True,capture_output=True,text=True)
+    def test_restart_resumes_the_section_producer_as_well_as_audio(self):self.case('section_restart')
     def test_work_survives_more_than_twenty_seconds_after_ack(self):self.run_case('busy_gap')
     def test_idle_activity_cannot_finish_running_task(self):self.run_case('idle_activity')
     def test_child_task_completion_preserves_root(self):self.run_case('children')

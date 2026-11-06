@@ -15,6 +15,7 @@ bool muse_native_voice_begin_message(const char *message,const char *text,uint32
 int muse_native_voice_copy(uint32_t generation,char *text,size_t capacity,char key[25]);
 bool muse_native_voice_rebind(uint32_t previous,uint32_t current);
 void muse_native_voice_cancel(void);
+bool muse_native_voice_has_pending_sections(void);
 typedef struct {
     unsigned phase,received,total,elapsed_ms,error,recoveries;
     bool active;

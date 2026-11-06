@@ -1261,7 +1261,7 @@ void muse_ui_bench_playback(int action){if(action>=0 && action<=33)s_playback_te
 static void playback_pause_clicked(lv_event_t *e){
     (void)e;muse_state_poke();muse_module_llm_status_t st;muse_module_llm_status(&st);
     /* Ignore repeated taps until the audio owner acknowledges the transition. */
-    if(st.state==MUSE_MODULE_LLM_SPEAKING && st.pause_requested==st.paused)muse_module_llm_toggle_pause();
+    if((st.state==MUSE_MODULE_LLM_SPEAKING||st.state==MUSE_MODULE_LLM_PREPARING) && st.pause_requested==st.paused)muse_module_llm_toggle_pause();
 }
 static void playback_stop_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(false);}
 static void playback_restart_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(true);}
@@ -1321,7 +1321,7 @@ static void playback_button_tick(void)
     muse_settings_ui_transport_visible(visible&&in_settings);
     lv_obj_set_flag(s_settings_shortcut,LV_OBJ_FLAG_HIDDEN,in_settings || muse_state_asleep());
     bool pending=st.pause_requested!=st.paused;
-    bool enabled=visible && st.state==MUSE_MODULE_LLM_SPEAKING && !pending && !muse_chat_playback_busy();
+    bool enabled=visible && (st.state==MUSE_MODULE_LLM_SPEAKING||st.state==MUSE_MODULE_LLM_PREPARING) && !pending && !muse_chat_playback_busy();
     lv_obj_set_state(s_pause_button,LV_STATE_DISABLED,!enabled);
     lv_obj_set_state(s_stop_button,LV_STATE_DISABLED,!active || st.state==MUSE_MODULE_LLM_CANCELLING || muse_chat_playback_busy());
     lv_obj_set_state(s_restart_button,LV_STATE_DISABLED,!muse_chat_playback_can_restart() || muse_chat_playback_busy() || !(st.state==MUSE_MODULE_LLM_READY || st.state==MUSE_MODULE_LLM_SPEAKING || st.state==MUSE_MODULE_LLM_PREPARING));

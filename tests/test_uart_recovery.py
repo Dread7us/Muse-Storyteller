@@ -18,7 +18,7 @@ def harness():
 #include <vector>
 #include <algorithm>
 enum {OP_NONE,OP_HELLO,OP_STATUS,OP_LISTEN_BEGIN,OP_LISTEN,OP_LISTEN_END,OP_SPEAK,OP_CANCEL,MUSE_MODULE_LLM_DISCOVERING};
-struct runtime_t {int operation=OP_NONE;int64_t pause_since=0,deadline=0,retry_at=0,next_framing_recovery=0,stable_ready_since=0;unsigned framing_recoveries=0;bool stop_unconfirmed=false;};
+struct runtime_t {int operation=OP_NONE;int64_t pause_since=0,buffering_since=0,deadline=0,retry_at=0,next_framing_recovery=0,stable_ready_since=0;unsigned framing_recoveries=0;bool stop_unconfirmed=false;};
 static bool s_ready=true,protected_recorder=false;static int s_lock=0,status=-1,recovered=0,ended=0,cancelled=0;
 #define portENTER_CRITICAL(x) ((void)0)
 #define portEXIT_CRITICAL(x) ((void)0)
@@ -53,6 +53,7 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];runtime_t r
  else if(c=="status"){r.operation=OP_STATUS;check_deadline(&r,100);assert(!recovered&&!s_ready);}
  else if(c=="recorder"){protected_recorder=true;check_deadline(&r,100);assert(!recovered&&!r.framing_recoveries);}
  else if(c=="paused"){r.operation=OP_SPEAK;r.pause_since=1;check_deadline(&r,100);assert(!recovered&&!cancelled&&r.operation==OP_SPEAK);}
+ else if(c=="buffering"){r.operation=OP_SPEAK;r.buffering_since=1;check_deadline(&r,100);assert(!recovered&&!cancelled&&r.operation==OP_SPEAK);}
  else if(c=="listen"){r.operation=OP_LISTEN;check_deadline(&r,100);assert(ended==1&&!recovered);}
  else if(c=="speaking"){r.operation=OP_SPEAK;check_deadline(&r,100);assert(cancelled==1&&!recovered);}
  else if(c=="cap"){r.framing_recoveries=2;check_deadline(&r,100);assert(!recovered);}
@@ -76,6 +77,7 @@ class UartRecovery(unittest.TestCase):
         r=subprocess.run([compiler,'-std=c++17','-O0',str(src),'-o',str(cls.exe)],capture_output=True,text=True)
         if r.returncode:raise RuntimeError(r.stderr)
     def case(self,name):subprocess.run([str(self.exe),name],check=True,capture_output=True,text=True)
+    def test_sentence_buffering_does_not_expire_active_playback(self):self.case('buffering')
     def test_idle_hello_timeout_recovers_once(self):self.case('hello')
     def test_status_timeout_first_retries_hello(self):self.case('status')
     def test_recorder_is_always_protected(self):self.case('recorder')

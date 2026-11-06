@@ -161,7 +161,7 @@ typedef struct {
     uint32_t nonce, serial, generation, generation_counter, chat_generation, record_epoch;
     char request_id[48], session[9];
     int64_t deadline, retry_at, next_status_at, waiting_since, pause_since, control_at;
-    int64_t next_framing_recovery, stable_ready_since;
+    int64_t next_framing_recovery, stable_ready_since, buffering_since;
     unsigned framing_recoveries;
     unsigned speech_speed;
     char external_key[25];
@@ -414,9 +414,13 @@ static void on_frame(const char *frame, size_t length, void *context)
         if (event.kind == MUSE_LLM_EVENT_ACCEPTED && !r->accepted) {
             r->accepted = true;
         } else if (event.kind == MUSE_LLM_EVENT_SPEAKING && r->accepted) {
+            if(r->buffering_since){r->deadline+=esp_timer_get_time()-r->buffering_since;r->buffering_since=0;}
             r->speaking = true;
             set_playback(MUSE_MODULE_LLM_PLAYBACK_ACTIVE);
             set_status(MUSE_MODULE_LLM_SPEAKING, "SPEAKING...");
+        } else if(event.kind==MUSE_LLM_EVENT_BUFFERING && r->accepted){
+            if(!r->buffering_since)r->buffering_since=esp_timer_get_time();
+            set_status(MUSE_MODULE_LLM_PREPARING,"BUFFERING NEXT SENTENCE...");
         } else if (event.kind == MUSE_LLM_EVENT_DONE && r->accepted && r->speaking) {
             /* Never an inference ACK or an estimated duration. */
             set_playback(MUSE_MODULE_LLM_PLAYBACK_DONE);
@@ -449,10 +453,12 @@ static void new_generation(runtime_t *r)
     portENTER_CRITICAL(&s_lock); s_status.issued_generations = r->generation_counter; portEXIT_CRITICAL(&s_lock);
     r->accepted = r->speaking = r->end_requested = r->cancel_failed = false;
     r->no_speech = false;
+    r->buffering_since = 0;
 }
 
 static void cancel_operation(runtime_t *r, bool failed)
 {
+    r->buffering_since = 0;
     r->operation = OP_CANCEL;
     r->cancel_failed = failed;
     portENTER_CRITICAL(&s_lock); s_recovering = failed; portEXIT_CRITICAL(&s_lock);
@@ -560,7 +566,7 @@ static bool transfer_recovery_allowed(unsigned op,bool commands_pending){
 
 static void check_deadline(runtime_t *r, int64_t now)
 {
-    if(r->operation==OP_SPEAK && r->pause_since)return;
+    if(r->operation==OP_SPEAK && (r->pause_since||r->buffering_since))return;
     if (!r->deadline || now < r->deadline) return;
     if (r->operation == OP_LISTEN) end_listening(r);
     else if (r->operation == OP_HELLO || r->operation == OP_STATUS) {

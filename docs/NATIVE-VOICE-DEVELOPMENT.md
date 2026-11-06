@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.8 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.4.0 repairs and extends an optional native Muse audio path. Development uses
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -77,12 +77,27 @@ script; it is not applied automatically by the source preparation helper.
 ## Prepared Helio / Aria narration
 
 Muse writes the exact response script and launches `tools/muse_vm_tts_job.py`
-using its existing built-in speech facility. Core2 downloads the complete MP3 through its existing authenticated native file
-connection while Muse prepares the reply. The Module verifies the complete
-transfer, decodes it, and prepares word timing before speaking. Ordinary replies
-use one continuous playback call; unusually long replies use bounded blocks
-from the already complete local cache. Alignment errors cannot discard valid
-audio. Word offsets refer to the original UTF-8 text.
+with `--sections` using its existing built-in speech facility. Two bounded workers
+prepare short sections in script order. A free local English Whisper Tiny checker
+in the same Muse VM verifies script agreement and unexpected repetition, then
+aligns every spoken word to the decoded audio. A rejected section is synthesized
+once more; a second failure becomes an explicit error rather than unchecked speech.
+
+Core2 retrieves the plan, each MP3, checksum and word anchors over its existing
+authenticated native file connection. The Module verifies the script, pronunciation,
+audio hash, decoded sample count and complete word coverage before admitting a section.
+Playback begins after at least two complete sections provide twelve seconds of
+audio at a sentence boundary, or the complete short reply is ready. Later sections
+arrive in the background. Long sentences are buffered fully before any piece plays;
+the player joins adjacent ready sentences into bounded native audio calls.
+If data falls behind, waiting occurs at a sentence boundary with explicit buffering
+feedback and working controls. Timings on this path are measured anchors, without
+proportional fallback. Word offsets refer to the original UTF-8 text.
+
+Pause and live volume resume from the audio clock position, independent of highlight
+delivery. Cached Restart preserves the checked audio; an incomplete Restart reuses
+verified sections while resuming the original job. Compatibility playback of older
+whole-clip jobs and the separate direct route retain their earlier timing behavior.
 The UI, volume and playback-control path remain separate from network/analysis work.
 
 No PC, browser extension or phone is required for this voice path after setup.
@@ -97,13 +112,20 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
   on that VM, with the matching `module/runtime/muse_speech_text.py` beside it.
   Use an immutable repository revision and verify SHA-256 after downloading;
   do not have an LLM retype or reconstruct the helper.
+- Install `muse_vm_sections.py`, `muse_vm_speech_check.py` and
+  `prepare_vm_sections.py` beside the helper. Run the preparation helper once in
+  the existing Muse VM; it creates an isolated `voice-env`, pins faster-whisper
+  and CTranslate2, and downloads a pinned public Tiny English model. It reports
+  `sections-ready.json` only after loading the local checker successfully. No
+  browser credentials, exported account token, PC process or paid speech service
+  is required. The section helper runs with `voice-env/bin/python3`.
 - The Module requires compatible ARM64 Python CTranslate2 and tokenizers packages,
   NumPy, a Tiny English CTranslate2 Whisper model, faster-whisper's matching
   feature extractor/tokenizer helpers, and the SDK's CC0 minimp3 decoder compiled
   for the Module. The reference asset root is `/opt/muse-cloud-voice-v41/`, with
   `vendor/`, `tiny-model/`, `feature_extractor.py`, `native_tokenizer.py`, and
   `decode_mp3`. These model/native dependencies are not embedded in this repo.
-- Deploy `muse_native_audio.py`, `muse_alignment_worker.py`, `muse_cloud_worker.py`, `muse_voice_backend.py`
+- Deploy `muse_narration_series.py`, `muse_native_audio.py`, `muse_alignment_worker.py`, `muse_cloud_worker.py`, `muse_voice_backend.py`
   and `muse_playback_control.py` with the matching `muse_voice_bridge.py`.
   Stop/save Recorder and finish playback first, retain
   exact backups, and validate both local startup and native playback afterward.
@@ -112,11 +134,14 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
 
 Each VM job has a fresh 24-character hexadecimal ID, with `source.md` under
 `~/muse-storyteller/replies/<job-id>/`. The helper accepts at most 8 KiB of script,
-produces at most 32 MiB of audio, times out after 180 seconds, and exclusively
+produces at most 32 MiB of audio, bounds section jobs to 300 seconds (legacy clips
+to 180 seconds), and exclusively
 claims a job to prevent duplicate synthesis. No listener, new provider, account
 credential export or new paid subscription is introduced.
 
-The helper atomically replaces `meta.json`. `streaming` allows early buffering;
+The helper atomically replaces `meta.json`. Version 2 `sections` permits verified
+opening playback; per-section metadata is published only after validation and alignment.
+The final joined hash must still cover every section. Legacy `streaming` allows early buffering;
 only `complete`, matching byte counts and SHA-256 prove a complete transfer.
 The device checks the script hash and requested voice/speed as well. Cached audio
 uses separate storage from conversations; low free space rejects cache writes

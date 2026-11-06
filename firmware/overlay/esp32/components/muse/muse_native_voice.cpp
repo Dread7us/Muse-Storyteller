@@ -23,6 +23,7 @@ extern "C" {
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static std::atomic<bool> running{false},cancelled{false};
 static std::atomic<int> state{0};
+static std::atomic<bool> section_mode{false},sections_complete{false};
 static std::atomic<unsigned> direct_failure{0};
 static uint32_t generation;
 static int selected_voice,selected_speed;
@@ -40,6 +41,7 @@ static constexpr size_t FILE_BATCH=32768;
 struct FileReply {uint8_t data[FILE_BATCH];size_t length,limit;int status;bool overflow,done;};
 EXT_RAM_BSS_ATTR static FileReply file_reply;
 EXT_RAM_BSS_ATTR static uint8_t file_batch[FILE_BATCH+1];
+EXT_RAM_BSS_ATTR static char section_metadata[4097];
 static unsigned file_requests;
 static uint32_t file_generation;
 static void file_cb(void *context,int status,const uint8_t *data,size_t length,bool end){
@@ -100,7 +102,7 @@ static char rpc_id[64],rpc_session[9];
 static bool rpc_waiting,rpc_done,rpc_ok;
 static int rpc_error;
 static size_t rpc_received;
-static bool rpc_complete;
+static bool rpc_complete,rpc_ready;
 static char rpc_hash[65];
 static uint32_t rpc_serial;
 static int64_t profile_wire_us,profile_ack_us;
@@ -140,6 +142,7 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
         double received=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(result,"received"));
         if(received>=0 && received<=32*1024*1024 && received==(size_t)received)rpc_received=(size_t)received;
         rpc_complete=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"complete"));
+        rpc_ready=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"ready"));
         const char *hash=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(result,"sha256"));
         if(hash&&strlen(hash)==64)strlcpy(rpc_hash,hash,sizeof(rpc_hash));
         rpc_done=true;rpc_waiting=false;
@@ -175,7 +178,7 @@ static bool rpc_once(cJSON *data,bool cleanup){
     cJSON_AddStringToObject(data,"session",owner);cJSON_AddNumberToObject(data,"generation",0);
     cJSON_AddItemToObject(root,"data",data);
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);cJSON_free(payload);if(!json)return false;
-    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
+    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=rpc_ready=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
     bool sent=muse_module_llm_send_line(json);cJSON_free(json);
     int64_t until=now()+10000000;bool done=false,ok=false;
     while(sent&&now()<until&&(cleanup||!stopped())){
@@ -205,7 +208,7 @@ static bool rpc_raw_body(const char *key,const uint8_t *raw,size_t decoded,size_
     encoded[encoded_length]=0;cJSON_AddStringToObject(root,"data",encoded);free(encoded);
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);
     if(!json)return false;
-    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
+    portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=rpc_ready=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
     int64_t wire_started=now();
     bool sent=muse_module_llm_send_line(json);cJSON_free(json);
     int64_t ack_started=now();profile_wire_us+=ack_started-wire_started;profile_packets++;
@@ -288,6 +291,112 @@ static bool hex_digest(const uint8_t *data,size_t length,char out[65]){
     for(unsigned i=0;i<32;i++){snprintf(out+2*i,3,"%02x",digest[i]);}
     return true;
 }
+static bool publish_sections_ready(){
+    if(!rpc(operation("series_status")))return false;
+    portENTER_CRITICAL(&lock);bool ready=rpc_ready;portEXIT_CRITICAL(&lock);
+    if(ready){phase(4);state.store(1);}
+    return true;
+}
+static bool transfer_sections(const char *source_hash,size_t source_bytes,unsigned sections,unsigned &stage,bool &retryable){
+    section_mode.store(true);auto &block=file_batch;size_t count=0,at=0,total=0;
+    stage=1;
+    while(at<source_bytes&&!stopped()){
+        size_t wanted=source_bytes-at;if(wanted>FILE_BATCH)wanted=FILE_BATCH;
+        int status=read_file("source.md",at,block,wanted,count);
+        if((status!=200&&status!=206)||!count||count>source_bytes-at)return false;
+        memcpy(script+at,block,count);at+=count;
+    }
+    script[at]=0;char actual[65];
+    if(at!=source_bytes||memchr(script,0,at)||!hex_digest((const uint8_t *)script,at,actual)||strcmp(actual,source_hash)){retryable=false;return false;}
+    int status=read_file("plan.json",0,block,FILE_BATCH,count);
+    if((status!=200&&status!=206)||!count)return false;
+    block[count]=0;cJSON *plan=cJSON_Parse((char *)block);
+    const char *hash=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(plan,"source_sha256"));
+    if(!plan||!hash||strcmp(hash,source_hash)||cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(plan,"sections"))!=(int)sections){cJSON_Delete(plan);retryable=false;return false;}
+    cJSON *begin=operation("series_begin");cJSON_AddStringToObject(begin,"text",script);cJSON_AddItemToObject(begin,"plan",plan);
+    // rpc consumes the parsed plan before the next network read, returning its
+    // small JSON allocations to the internal-memory reserve immediately.
+    if(!rpc(begin))return false;
+    portENTER_CRITICAL(&lock);bool cached=rpc_complete,opening_ready=rpc_ready;portEXIT_CRITICAL(&lock);
+    if(opening_ready){phase(4);state.store(1);}
+    if(cached&&opening_ready){sections_complete.store(true);return true;}
+    for(unsigned index=0;index<sections&&!stopped();index++){
+        char name[40],expected[65]={0};size_t bytes=0;bool found=false;
+        snprintf(name,sizeof(name),"part-%03u.json",index);stage=2;
+        int64_t deadline=now()+90000000;
+        while(now()<deadline&&!stopped()){
+            status=read_file(name,0,block,4096,count);
+            if(status==404){pause_ms(150);continue;}
+            if((status!=200&&status!=206)||!count)return false;
+            block[count]=0;memcpy(section_metadata,block,count+1);
+            cJSON *m=cJSON_Parse(section_metadata);
+            const char *phase_name=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"state"));
+            const char *sha=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"audio_sha256"));
+            double size=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"audio_bytes"));
+            bool error=phase_name&&!strcmp(phase_name,"error");
+            found=phase_name&&!strcmp(phase_name,"complete")&&cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m,"aligned"))&&
+                cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"index"))==index&&
+                sha&&strlen(sha)==64&&size>=144&&size<=120000&&size==(size_t)size;
+            if(found){bytes=(size_t)size;strlcpy(expected,sha,sizeof(expected));}
+            cJSON_Delete(m);
+            if(error){retryable=false;return false;}
+            if(found)break;
+            pause_ms(150);
+        }
+        if(!found||stopped())return false;
+        cJSON *request=operation("part_begin");cJSON_AddNumberToObject(request,"index",index);
+        cJSON_AddNumberToObject(request,"bytes",bytes);cJSON_AddStringToObject(request,"sha256",expected);
+        if(!rpc(request))return false;
+        portENTER_CRITICAL(&lock);size_t received=rpc_received;bool complete=rpc_complete;portEXIT_CRITICAL(&lock);
+        if(complete){
+            if(received!=bytes)return false;
+        }else{
+            if(received!=0)return false;
+            size_t offset=0;stage=3;snprintf(name,sizeof(name),"part-%03u.mp3",index);
+            while(offset<bytes&&!stopped()){
+                size_t wanted=bytes-offset;if(wanted>FILE_BATCH)wanted=FILE_BATCH;
+                status=read_file(name,offset,block,wanted,count);
+                if((status!=200&&status!=206)||!count||count>bytes-offset)return false;
+                for(size_t sent=0;sent<count;){
+                    size_t portion=count-sent;if(portion>1536)portion=1536;
+                    if(!rpc_binary_block(block+sent,portion,offset+sent))return false;
+                    sent+=portion;
+                }
+                offset+=count;buffered(total+offset,0);
+            }
+            if(stopped())return false;
+            cJSON *m=cJSON_Parse(section_metadata);request=operation("part_end");
+            cJSON_AddNumberToObject(request,"pcm_samples",cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"pcm_samples")));
+            cJSON_AddBoolToObject(request,"aligned",cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m,"aligned")));
+            cJSON_AddItemToObject(request,"words",cJSON_DetachItemFromObjectCaseSensitive(m,"words"));cJSON_Delete(m);
+            if(!rpc(request))return false;
+        }
+        total+=bytes;buffered(total,0);
+        if(!publish_sections_ready())return false;
+        printf("@native_section {\"index\":%u,\"count\":%u,\"bytes\":%u,\"opening_ready\":%s}\n",index+1,sections,(unsigned)bytes,state.load()==1?"true":"false");fflush(stdout);
+    }
+    stage=4;
+    int64_t deadline=now()+90000000;bool sealed=false;
+    while(now()<deadline&&!stopped()){
+        status=read_file("meta.json",0,block,4096,count);
+        if(status!=200&&status!=206)return false;
+        block[count]=0;cJSON *m=cJSON_Parse((char *)block);
+        const char *phase_name=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"state"));
+        const char *sha=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m,"audio_sha256"));
+        bool error=phase_name&&!strcmp(phase_name,"error");
+        sealed=phase_name&&!strcmp(phase_name,"complete")&&sha&&strlen(sha)==64&&
+            cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"audio_bytes"))==total;
+        cJSON *request=nullptr;
+        if(sealed){request=operation("series_end");cJSON_AddNumberToObject(request,"bytes",total);cJSON_AddStringToObject(request,"sha256",sha);}
+        cJSON_Delete(m);
+        if(error){retryable=false;return false;}
+        if(request){if(!rpc(request))return false;break;}
+        pause_ms(150);
+    }
+    if(!sealed||stopped())return false;
+    sections_complete.store(true);buffered(total,total);
+    return publish_sections_ready()&&state.load()==1;
+}
 static bool transfer_once(unsigned &stage,bool &retryable){
     bool ready=false,complete=false;
     // One worker owns the PSRAM batch. Keep large data off its task stack.
@@ -311,6 +420,13 @@ static bool transfer_once(unsigned &stage,bool &retryable){
         static const char *speeds[]={"slow","normal","fast"};
         bool identity=voice&&speed&&!strcmp(voice,expected_voice)&&!strcmp(speed,speeds[selected_speed]);
         double bytes=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"source_bytes"));
+        double sections=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"section_count"));
+        if(identity&&cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"version"))==2&&phase&&
+           (!strcmp(phase,"sections")||!strcmp(phase,"complete"))&&hash&&strlen(hash)==64&&
+           bytes>=1&&bytes<=8192&&bytes==(size_t)bytes&&sections>=1&&sections<=128&&sections==(unsigned)sections){
+            strlcpy(expected_source,hash,65);source_bytes=(size_t)bytes;cJSON_Delete(m);
+            return transfer_sections(expected_source,source_bytes,(unsigned)sections,stage,retryable);
+        }
         if(identity&&phase&&(!strcmp(phase,"streaming")||!strcmp(phase,"complete"))&&hash&&strlen(hash)==64&&bytes>=1&&bytes<=8192&&bytes==(size_t)bytes){
             strlcpy(expected_source,hash,65);source_bytes=(size_t)bytes;ready=true;
             if(!strcmp(phase,"complete")){
@@ -408,16 +524,17 @@ static void worker(void *){
             pause_ms(1000*attempt);
             while(now()<wait_until&&now()<recovery_deadline&&!stopped()){
                 muse_module_llm_status_t st;muse_module_llm_status(&st);
-                if(st.state==MUSE_MODULE_LLM_READY&&muse_link_req_ready())break;
+                if((st.state==MUSE_MODULE_LLM_READY||(section_mode.load()&&(st.state==MUSE_MODULE_LLM_SPEAKING||st.state==MUSE_MODULE_LLM_PREPARING)))&&muse_link_req_ready())break;
                 pause_ms(100);
             }
         }
         if(stopped() || (attempt&&now()>=recovery_deadline))break;
         phase(attempt?7:1);
         ready=transfer_once(stage,retryable);
+        if(!ready&&section_mode.load())rpc(operation("abort"),true);
         if(ready||!retryable)break;
     }
-    if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);if(!stopped())state.store(-1);}
+    if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);if(!stopped()){state.store(-1);if(section_mode.load())rpc(operation("series_abort"),true);}}
     printf("@native_batch {\"ok\":%s,\"file_requests\":%u,\"packets\":%u,\"wire_ms\":%u,\"ack_ms\":%u,\"elapsed_ms\":%u}\n",ready?"true":"false",file_requests,profile_packets,(unsigned)(profile_wire_us/1000),(unsigned)(profile_ack_us/1000),(unsigned)((now()-started_us)/1000));fflush(stdout);
     running.store(false);vTaskDeleteWithCaps(nullptr);
 }
@@ -565,7 +682,7 @@ static void direct_worker(void *){
 bool muse_native_voice_begin_message(const char *message,const char *text,uint32_t gen){
     if(!message||!*message||strlen(message)>=sizeof(direct_message)||!text||!*text||strlen(text)>=sizeof(script))return false;
     bool expected=false;if(!running.compare_exchange_strong(expected,true))return false;
-    generation=gen;direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
+    generation=gen;section_mode.store(false);sections_complete.store(false);direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
     // Identity follows the immutable message and exact script, so Restart and
     // later boots can reuse its checked partial or complete local cache.
     if(!native_message_key(message,text,job)){running.store(false);return false;}
@@ -576,7 +693,7 @@ bool muse_native_voice_begin_message(const char *message,const char *text,uint32
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
     bool expected=false;if(!key||strlen(key)!=24||!running.compare_exchange_strong(expected,true))return false;
     for(const char *p=key;*p;p++)if(!((*p>='0'&&*p<='9')||(*p>='a'&&*p<='f'))){running.store(false);return false;}
-    generation=gen;direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
+    generation=gen;section_mode.store(false);sections_complete.store(false);direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
     portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,key,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
     if(xTaskCreatePinnedToCoreWithCaps(worker,"muse_native",16384,nullptr,3,nullptr,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){running.store(false);state.store(-1);return false;}return true;
 }
@@ -584,6 +701,7 @@ int muse_native_voice_copy(uint32_t gen,char *text,size_t capacity,char key[25])
     if(gen!=generation)return -2;
     int value=state.load();if(value==1){if(strlen(script)>=capacity)return -1;strlcpy(text,script,capacity);strlcpy(key,job,25);}return value;
 }
+bool muse_native_voice_has_pending_sections(){return section_mode.load()&&!sections_complete.load();}
 void muse_native_voice_cancel(){cancelled.store(true);}
 
 bool muse_native_voice_rebind(uint32_t previous,uint32_t current){if(generation!=previous||cancelled.load()||state.load()<0)return false;generation=current;return true;}

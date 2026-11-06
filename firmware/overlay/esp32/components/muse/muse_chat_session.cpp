@@ -1285,7 +1285,7 @@ static void send_chat(const char *text, const char *modality)
         s_turn.native_voice=muse_settings_muse_voice();s_turn.native_speed=muse_settings_speech_speed();
         const char *voice=s_turn.native_voice==1?"avocado_v2:MAI_01":"avocado_v2:MAI_03";
         const char *speeds[]={"slow","normal","fast"};
-        snprintf(native_prompt,sizeof(native_prompt),"\nDevice narration delivery: Answer the question below normally, without shortening stories or lists. Also write the exact complete answer (Markdown allowed, at most 8192 UTF-8 bytes) to ~/muse-storyteller/replies/%s/source.md, creating this fresh directory. Use ONLY the installed built-in Muse helper: launch python3 ~/muse-storyteller/tools/muse_vm_tts_job.py %s --voice %s --speed %s --compact as a detached background job with stdin /dev/null and stdout/stderr in that job directory. Do not wait for synthesis to finish. Do not change global voice/settings or install a provider. Then return the exact same answer as normal text, without paths, tool acknowledgements or delivery instructions. If the helper cannot launch, return the answer text and briefly report that audio could not be created. This paragraph is device delivery configuration, not part of the answer.\n",s_turn.native_job,s_turn.native_job,voice,speeds[s_turn.native_speed]);
+        snprintf(native_prompt,sizeof(native_prompt),"\nDevice narration delivery: Answer the question below normally, without shortening stories or lists. Also write the exact complete answer (Markdown allowed, at most 8192 UTF-8 bytes) to ~/muse-storyteller/replies/%s/source.md, creating this fresh directory. Use ONLY the installed built-in Muse helper: launch ~/muse-storyteller/voice-env/bin/python3 ~/muse-storyteller/tools/muse_vm_tts_job.py %s --voice %s --speed %s --compact --sections as a detached background job with stdin /dev/null and stdout/stderr in that job directory. Do not wait for synthesis to finish. Do not change global voice/settings or install a provider. Then return the exact same answer as normal text, without paths, tool acknowledgements or delivery instructions. If the helper cannot launch, return the answer text and briefly report that audio could not be created. This paragraph is device delivery configuration, not part of the answer.\n",s_turn.native_job,s_turn.native_job,voice,speeds[s_turn.native_speed]);
     }
     size_t pref_cap=strlen(preferences)+strlen(native_prompt)+strlen(base)+1;char *preferred=(char *)malloc(pref_cap);
     if(preferred)snprintf(preferred,pref_cap,"%s%s%s",preferences,native_prompt,base);
@@ -2418,6 +2418,13 @@ static void restart_reply(void)
     s_turn.start_us=s_turn.last_event_us=s_turn.last_content_us=s_turn.chat_us=now_us();s_reply_shown[0]=0;
     for(int i=0;i<s_turn.nmsgs;i++){msg_t &m=s_turn.msgs[i];if(m.done&&m.len&&m.len<TEXT_MAX&&!m.native_skip)m.tts=TTS_QUEUED;m.pcm_start=m.pcm_frames=0;}
     s_playback_active=true;s_replaying=true;
+    if(s_turn.native_job[0] && muse_native_voice_has_pending_sections()){
+        // Stop can leave a healthy verified opening with later sections not
+        // downloaded yet. Restart must resume that producer as well as audio.
+        for(int i=0;i<s_turn.nmsgs;i++)s_turn.msgs[i].external_key[0]=0;
+        s_turn.native_claimed=false;s_turn.native_started=false;s_replaying=false;
+        muse_native_voice_cancel();
+    }
     // Stop during buffering must reuse the in-flight complete-download job,
     // rather than fall back to a placeholder or a different voice.
     if(s_turn.native_job[0] && !s_turn.native_claimed){

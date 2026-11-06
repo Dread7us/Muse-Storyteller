@@ -16,9 +16,16 @@ def play(backend,pcm,volume,cancel,check_cancel,scale_pcm,rate,Error):
  beginning=time.monotonic();paused_total=0.;started=beginning;applied=volume
  callback=getattr(backend,'playback_state_callback',None)
  def bookmark():
-  # Restart the current highlighted word, never the whole message. This
-  # deliberately permits a short word repeat instead of dropping its opening.
-  return schedule[max(0,index-1)][0] if schedule and index else offset
+  # Playback position is independent of text/highlight quality. A late word
+  # event must never rewind a sentence when volume changes or Pause resumes.
+  return max(offset,min(expected,offset+max(0.,time.monotonic()-started))) if active else offset
+ def words_until(position):
+  nonlocal index
+  current=None
+  while index<len(schedule) and schedule[index][0]<=position:
+   _,a,b=schedule[index];current=(a,b);index+=1
+  # Deliver the current word, not a burst of obsolete highlights after jitter.
+  if current and backend.word_callback:backend.word_callback(*current)
  try:
   while True:
    check_cancel(cancel);paused,wanted=control.read()
@@ -53,13 +60,11 @@ def play(backend,pcm,volume,cancel,check_cancel,scale_pcm,rate,Error):
    status=backend.rpc('audio','audio_status',b'play')
    if status==b'Runing':
     saw=True;position=offset+time.monotonic()-started
-    while backend.word_callback and index<len(schedule) and schedule[index][0]<=position:
-     _,a,b=schedule[index];backend.word_callback(a,b);index+=1
+    words_until(min(position,expected))
    elif status==b'None':
     if saw:
      if time.monotonic()-started<max(0.,expected-offset-max(.25,expected*.005)):raise Error(-14,'Native audio ended too early')
-     while backend.word_callback and index<len(schedule):
-      _,a,b=schedule[index];backend.word_callback(a,b);index+=1
+     words_until(min(expected,offset+time.monotonic()-started))
      backend.stop_audio();return {'pcm_bytes':len(pcm),'observed_running':True,'joined':True}
    else:raise Error(-3,'Unexpected native playback status')
    if time.monotonic()-beginning-paused_total>expected*3+30:raise Error(-12,'Native playback completion was not observed')

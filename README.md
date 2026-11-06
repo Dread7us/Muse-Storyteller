@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.3.9**
+**Edition v0.4.0**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -32,6 +32,12 @@ This community edition adds the speech, reader, recorder, and control experience
 
 Native Muse narration is an optional online path using the existing Muse account allowance,
 with Piper kept for offline narration. See [native voice setup and limits](docs/NATIVE-VOICE-DEVELOPMENT.md).
+
+Prepared Helio/Aria narration now uses independently checked, sentence-aware sections.
+The opening can play while later sections arrive; real word timings travel with each
+section, and incorrect or repeating generated speech is retried before admission.
+Pause, live volume, Stop and cached Restart stay available during narration and buffering.
+This path requires the matching Muse-side helpers described in the setup notes.
 
 Sound now also offers **Muse app voice – direct**: it retrieves the response's
 native audio without asking Muse to create and deliver a separate file. It uses

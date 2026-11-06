@@ -1,5 +1,14 @@
 # Release history
 
+## 0.4.0
+
+- Prepare Helio/Aria narration as bounded sections with two concurrent generation workers, admitting opening sentences before the complete story finishes transferring.
+- Check generated speech for script agreement and unexpected repetition using a free English Whisper Tiny model in the existing Muse environment; retry a rejected section once before reporting failure.
+- Align each checked section to its exact audio before publishing it. Preserve original UTF-8 word offsets without proportional timing fallback on this path.
+- Buffer a complete sentence before playing any of its pieces. Join adjacent ready sentences into bounded native audio calls and report any later buffering explicitly.
+- Resume pause and live-volume changes at the actual audio position instead of rewinding to a delayed highlighted word. Avoid bursts of obsolete highlight events.
+- Preserve checked section caches across Restart, recover incomplete transfers, and keep Pause/Resume available during a sentence-buffering wait.
+
 ## 0.3.9
 
 - Increase interface palette saturation by 12.5%, preserving hue and peak brightness. Colors are precomputed, adding no per-frame color processing.

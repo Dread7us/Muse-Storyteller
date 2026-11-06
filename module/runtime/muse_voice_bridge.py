@@ -296,7 +296,7 @@ class Engine:
                         if req['data'].get('external_key'):
                             from muse_native_audio import NativeAudioError
                             try:
-                                self.native_store.play(backend,req['data']['external_key'],req['data']['text'],req['data'].get('volume',70),operation.cancel,lambda:self.send(req,'speaking'))
+                                self.native_store.play(backend,req['data']['external_key'],req['data']['text'],req['data'].get('volume',70),operation.cancel,lambda:self.send(req,'speaking'),lambda:self.send(req,'buffering'))
                             except Cancelled:raise
                             except Exception as exc:
                                 raise BridgeError(-35,str(exc) if isinstance(exc,NativeAudioError) else 'Muse audio playback failed') from exc

@@ -41,7 +41,8 @@ class CloudWorker:
         self.active = threading.Event()
         self.store = Store()
         engine.native_store = self.store
-        self.store.warming = self.store.pool.submit(self.store.warm)
+        # Section timings arrive checked with their exact audio. Load the
+        # optional local aligner only if a legacy whole-clip job needs it.
         self.thread = threading.Thread(target=self.run, name='muse-cloud-cache', daemon=True)
         self.thread.start()
 

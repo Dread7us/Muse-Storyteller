@@ -66,7 +66,7 @@ class Aligner:
 
 class Store:
  def __init__(self,root=CACHE):
-  self.root=Path(root)/uuid.uuid4().hex;self.root.mkdir(mode=0o700,parents=True,exist_ok=True);self.lock=threading.RLock();self.items={};self.active=set();self.aligner=None;self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='native-word-timing');self.warming=None;self.warm_lock=threading.Lock()
+  self.root=Path(root)/uuid.uuid4().hex;self.root.mkdir(mode=0o700,parents=True,exist_ok=True);self.lock=threading.RLock();self.items={};self.series={};self.active=set();self.aligner=None;self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='native-word-timing');self.warming=None;self.warm_lock=threading.Lock()
  def warm(self):
   with self.warm_lock:
    if self.aligner is None:self.aligner=Aligner()
@@ -90,6 +90,28 @@ class Store:
   op,key=data.get('op'),data.get('key')
   if not isinstance(key,str) or not re.fullmatch('[0-9a-f]{24}',key):raise NativeAudioError('Invalid native audio key')
   with self.lock:
+   if data.get('op')=='series_begin' or key in self.series:
+    from muse_narration_series import Series,SeriesError
+    try:
+     if data.get('_transport_verified') is not True:raise SeriesError('Narration requires checked requests')
+     if op=='series_begin':
+      text=data.get('text');plan=data.get('plan')
+      if not isinstance(text,str) or not text.strip() or len(text.encode())>8192 or not isinstance(plan,dict):raise SeriesError('Invalid narration text or plan')
+      if shutil.disk_usage(self.root).free<128*1024*1024:raise SeriesError('Narration cache needs free storage')
+      value=self.series.get(key) or self._load_series(key,text)
+      if value is None:
+       if len(self.series)>=4:
+        oldest=next((k for k in self.series if k not in self.active),None)
+        if oldest is None:raise SeriesError('Narration cache is busy')
+        self.series.pop(oldest).close()
+       value=Series(self,key,text,plan,session);self.series[key]=value
+      if value.text!=text or value.parts!=plan.get('sections'):raise SeriesError('Narration identity changed')
+      if key in self.active and value.session!=session:raise SeriesError('Narration is playing for another session')
+      value.session=session
+      if key not in self.active:value.error=None
+      return value.status()
+     return self.series[key].request(data,session)
+    except SeriesError as exc:raise NativeAudioError(str(exc)) from exc
    item=self.items.get(key)
    if op=='begin':
     text=data.get('text')
@@ -174,6 +196,23 @@ class Store:
     item.done=True
     return {'received':item.received}
    raise NativeAudioError('Unknown native audio operation')
+ def _load_series(self,key,text):
+  from muse_narration_series import Series
+  for path in self.root.parent.glob('*/'+key+'/series.json'):
+   try:
+    if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():continue
+    manifest=json.loads(path.read_text())
+    if manifest.get('source')!=hashlib.sha256(text.encode()).hexdigest():continue
+    value=Series(self,key,text,manifest['plan'],None,path.parent)
+    for i in range(len(value.parts)):value._load_part(i)
+    sealed=path.parent/'sealed.json'
+    if sealed.exists() and len(value.timings)==len(value.parts):
+     summary=json.loads(sealed.read_text());combined=hashlib.sha256()
+     for i in range(len(value.parts)):combined.update(value.items[i].mp3.read_bytes())
+     value.sealed=summary.get('sha256')==combined.hexdigest()
+    self.series[key]=value;return value
+   except (OSError,ValueError,KeyError,TypeError):continue
+  return None
  def _load(self,key,text):
   # Complete caches survive a Module restart; partial files never count as ready.
   base=self.root.parent
@@ -276,14 +315,27 @@ class Store:
   # Do not strand an analysis worker waiting for the end of an interrupted
   # upload during a service restart. Keep its protected MP3 prefix on disk.
   with self.lock:
+   for series in self.series.values():series.close()
    for item in self.items.values():
     if not item.done:item.abort()
     future=getattr(item,'timing_future',None)
     if future:future.cancel()
   self.pool.shutdown(wait=False)
   if self.aligner is not None and hasattr(self.aligner,'close'):self.aligner.close()
- def play(self,backend,key,text,volume,cancel,on_play):
+ def play(self,backend,key,text,volume,cancel,on_play,on_buffering=None):
   from muse_voice_backend import check_cancel
+  with self.lock:series=self.series.get(key) or self._load_series(key,text)
+  if series is not None:
+   if series.text!=text:raise NativeAudioError('Narration script changed')
+   with self.lock:self.active.add(key)
+   if backend.mic:backend.mic.pause_output(True)
+   try:
+    from muse_narration_series import SeriesError
+    try:return series.play(backend,volume,cancel,on_play,on_buffering)
+    except SeriesError as exc:raise NativeAudioError(str(exc)) from exc
+   finally:
+    with self.lock:self.active.discard(key)
+    if backend.mic:backend.mic.pause_output(False)
   with self.lock:
    item=self.items.get(key) or self._load(key,text)
    if item is not None:self.active.add(key)
