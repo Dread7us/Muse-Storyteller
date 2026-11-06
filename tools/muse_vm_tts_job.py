@@ -189,6 +189,7 @@ def main():
     parser.add_argument("--voice", default="avocado_v2:MAI_03")
     parser.add_argument("--speed", choices=SPEEDS, default="normal")
     parser.add_argument("--compact",action="store_true",help="Keep original audio and encode a smaller 16 kHz mono device delivery")
+    parser.add_argument("--sections",action="store_true",help="Prepare independently checked, sentence-aware narration sections")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{24}", args.job):
         parser.error("Invalid device job ID")
@@ -196,7 +197,10 @@ def main():
     folder = root / args.job
     if folder.resolve().parent != root:
         parser.error("Job escapes the Muse Storyteller reply directory")
-    synthesize(folder, args.voice, args.speed,compact=args.compact)
+    if args.sections:
+        from muse_vm_sections import synthesize_sections
+        synthesize_sections(folder,args.voice,args.speed)
+    else:synthesize(folder, args.voice, args.speed,compact=args.compact)
 
 
 if __name__ == "__main__":
