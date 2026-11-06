@@ -18,7 +18,10 @@ def main():
         'faster-whisper==1.2.1','ctranslate2==4.8.5'],check=True,timeout=240)
     model=root/'models'/'tiny.en';model.mkdir(parents=True,exist_ok=True)
     code="from huggingface_hub import snapshot_download;snapshot_download('Systran/faster-whisper-tiny.en',revision="+repr(REVISION)+",local_dir="+repr(str(model))+",allow_patterns=['model.bin','config.json','tokenizer.json','vocabulary.txt'],token=False)"
-    env=dict(os.environ,HF_HUB_DISABLE_TELEMETRY='1')
+    # The optional Xet path stalled the reference VM's initial public download.
+    # Standard HTTPS resumes the same verified revision/cache without a token.
+    env=dict(os.environ,HF_HUB_DISABLE_TELEMETRY='1',HF_HUB_DISABLE_XET='1',
+             HF_HUB_DOWNLOAD_TIMEOUT='45',HF_HUB_ETAG_TIMEOUT='15')
     subprocess.run([str(python),'-c',code],check=True,timeout=240,env=env)
     subprocess.run([str(python),'-c',"import sys;sys.path.insert(0,"+repr(str(root/'tools'))+");from muse_vm_speech_check import SpeechCheck;SpeechCheck("+repr(str(model))+")"],check=True,timeout=60)
     report=dict(version=2,ready=True,model_revision=REVISION,python=str(python),

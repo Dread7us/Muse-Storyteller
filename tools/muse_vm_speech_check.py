@@ -34,10 +34,20 @@ class SpeechCheck:
             expected_tokens=lexical(text);heard_tokens=lexical(normalized_heard)
             agreement=difflib.SequenceMatcher(None,expected_tokens,heard_tokens,autojunk=False).ratio()
             if repeated_speech(text,normalized_heard) or agreement<.55:raise ValueError('Generated speech differs from its text')
-            features=self.model.feature_extractor(audio)
-            frames=min(features.shape[-1],round(duration*100))
-            encoded=self.model.encode(features[:,:3000])
-            aligned=self.model.find_alignment(self.tokenizer,[self.tokenizer.encode(text)],encoded,frames)[0]
+            last=None
+            for lead,tail in ((0.,0.),(.24,.48),(.5,.8)):
+                padded=np.pad(audio,(round(lead*16000),round(tail*16000)))
+                features=self.model.feature_extractor(padded)
+                frames=min(3000,features.shape[-1],round(len(padded)/160))
+                encoded=self.model.encode(features[:,:3000])
+                aligned=self.model.find_alignment(self.tokenizer,[self.tokenizer.encode(text)],encoded,frames)[0]
+                try:
+                    result=word_anchors(aligned,text,duration,first_word,lead)
+                    return dict(aligned=True,words=result,agreement=round(agreement,4),pcm_samples=len(audio),alignment_padding=lead)
+                except ValueError as exc:last=exc
+            raise last
+
+def word_anchors(aligned,text,duration,first_word=0,lead=0.):
         located=[];cursor=0;probabilities=[]
         for entry in aligned:
             word=entry['word'].strip()
@@ -45,7 +55,7 @@ class SpeechCheck:
             at=text.find(word,cursor)
             if at<0:raise ValueError('Speech alignment changed its text')
             cursor=at+len(word);probabilities.append(float(entry['probability']))
-            located.append((at,cursor,float(entry['start']),float(entry['end'])))
+            located.append((at,cursor,float(entry['start'])-lead,float(entry['end'])-lead))
         if not probabilities or sum(probabilities)/len(probabilities)<.25:raise ValueError('Generated speech has low text confidence')
         result=[];previous=-1.;matches=list(re.finditer(r'\S+',text))
         for index,match in enumerate(matches):
@@ -56,4 +66,4 @@ class SpeechCheck:
             if begin<previous or end-begin<.01:raise ValueError('Speech alignment collapsed')
             result.append([round(begin,4),round(end,4),first_word+index]);previous=begin
         if not result:raise ValueError('Speech alignment has no words')
-        return dict(aligned=True,words=result,agreement=round(agreement,4),pcm_samples=len(audio))
+        return result
