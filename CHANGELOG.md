@@ -1,5 +1,14 @@
 # Release history
 
+## 0.3.7
+
+- Fix Restart after a failed or cancelled direct download by binding healthy work to the new playback generation, or fetching the same existing response afresh when the old job failed.
+- Send verified audio blocks as single-layer base64 JSON packets, avoiding the vendor binary RAW framing path that stalled during a longer real reply.
+- Recover a lost packet before retrying the same offset, with at most two transfer recoveries; coordinate recovery on the UART operation owner so capture, playback, Recorder and queued user actions take priority.
+- Keep per-block integrity, duplicate checks, final-file hashing and decoder success mandatory before native playback.
+- Distinguish cache, connection, download, transfer and final-check failures on screen. Stop automatic retries on access refusal.
+- Add guarded existing-message replay for maintenance without posting a new chat question or adding duplicate archive entries.
+
 ## 0.3.6
 
 - Recover an unresponsive idle UART link after a failed status check and hello timeout, without rebooting either device or restarting the Module's services.

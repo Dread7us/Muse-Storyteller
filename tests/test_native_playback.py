@@ -20,6 +20,19 @@ class Player:
   self.parts.append(len(pcm));self.words.extend(self.word_schedule)
   if self.interrupt:cancel.set();check(cancel)
 class TransferRetries(unittest.TestCase):
+ def test_ascii_audio_packet_keeps_integrity_without_raw_framing(self):
+  with patch.dict(sys.modules,{'fcntl':types.SimpleNamespace(),'muse_zmq':types.SimpleNamespace()}):
+   import muse_voice_bridge as bridge
+  body=bytes(range(256))*16;key='1234567890abcdef12345678';digest=hashlib.sha256(body).hexdigest()
+  info=dict(session='12345678',generation=0,key=key,offset=4096,bytes=len(body),sha256=digest)
+  info['packet_sha256']=hashlib.sha256(('%s:%d:%d:%s'%(key,4096,len(body),digest)).encode()).hexdigest()
+  request=dict(request_id='cloud-ascii-test',work_id='musevoice',object='musevoice.v1',action='cloud',raw_info=info,data=base64.b64encode(body).decode())
+  wire=adapter.encode(request);self.assertTrue(wire.isascii());self.assertLess(len(wire),8192);self.assertNotIn('RAW',request)
+  route='ipc:///tmp/musevoice/client-'+'1'*24+'.sock'
+  parsed=bridge.parse_request(b'cloud',adapter.pack_pair(route.encode(),wire),route)
+  decoded=checked_payload(parsed['data']);self.assertTrue(decoded['_transport_verified']);self.assertEqual(base64.b64decode(decoded['audio']),body)
+  for change in [dict(parsed['data'],offset=4097),dict(parsed['data'],audio=base64.b64encode(body[:-1]).decode())]:
+   with self.assertRaises(native.NativeAudioError):checked_payload(change)
  def test_binary_body_and_header_are_both_required_for_admission(self):
   with patch.dict(sys.modules,{'fcntl':types.SimpleNamespace(),'muse_zmq':types.SimpleNamespace()}):
    import muse_voice_bridge as bridge

@@ -23,6 +23,7 @@ extern "C" {
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static std::atomic<bool> running{false},cancelled{false};
 static std::atomic<int> state{0};
+static std::atomic<unsigned> direct_failure{0};
 static uint32_t generation;
 static int selected_voice,selected_speed;
 static char job[25];
@@ -100,6 +101,7 @@ static char rpc_hash[65];
 static uint32_t rpc_serial;
 static int64_t profile_wire_us,profile_ack_us;
 static unsigned profile_packets;
+static unsigned direct_recoveries;
 static bool hex_digest(const uint8_t *data,size_t length,char out[65]);
 bool muse_native_voice_reply(const cJSON *root,const char *session){
     const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root,"request_id"));
@@ -169,16 +171,20 @@ static bool rpc_raw_body(const char *key,const uint8_t *raw,size_t decoded,size_
     if(!hex_digest((const uint8_t *)canonical,strlen(canonical),signature)){return false;}
     cJSON *root=cJSON_CreateObject(),*info=cJSON_CreateObject();
     if(!root||!info){cJSON_Delete(root);cJSON_Delete(info);return false;}
-    // RAW must be the first JSON key for the stock StackFlow extractor.
-    cJSON_AddNumberToObject(root,"RAW",decoded);
+    // Keep the complete frame in JSON mode. The stock RAW extractor can lose
+    // framing during long transfers; raw_info/data already has the same verified
+    // receiver path after decoding its single base64 layer.
     char id[64];snprintf(id,sizeof(id),"cloud-%08lx-%08lx",(unsigned long)esp_random(),(unsigned long)++rpc_serial);
     cJSON_AddStringToObject(root,"request_id",id);cJSON_AddStringToObject(root,"work_id","musevoice");cJSON_AddStringToObject(root,"object","musevoice.v1");cJSON_AddStringToObject(root,"action","cloud");
     cJSON_AddStringToObject(info,"session",owner);cJSON_AddNumberToObject(info,"generation",0);cJSON_AddStringToObject(info,"key",key);cJSON_AddNumberToObject(info,"offset",offset);cJSON_AddNumberToObject(info,"bytes",decoded);cJSON_AddStringToObject(info,"sha256",hash);cJSON_AddStringToObject(info,"packet_sha256",signature);cJSON_AddItemToObject(root,"raw_info",info);
+    size_t capacity=4*((decoded+2)/3)+1,encoded_length=0;char *encoded=(char *)malloc(capacity);
+    if(!encoded||mbedtls_base64_encode((uint8_t *)encoded,capacity,&encoded_length,raw,decoded)){free(encoded);cJSON_Delete(root);return false;}
+    encoded[encoded_length]=0;cJSON_AddStringToObject(root,"data",encoded);free(encoded);
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);
     if(!json)return false;
     portENTER_CRITICAL(&lock);strlcpy(rpc_id,id,sizeof(rpc_id));strlcpy(rpc_session,owner,sizeof(rpc_session));rpc_received=0;rpc_complete=false;rpc_hash[0]=0;rpc_error=-1;rpc_waiting=true;rpc_done=rpc_ok=false;portEXIT_CRITICAL(&lock);
     int64_t wire_started=now();
-    bool sent=muse_module_llm_send_binary(json,raw,decoded);cJSON_free(json);
+    bool sent=muse_module_llm_send_line(json);cJSON_free(json);
     int64_t ack_started=now();profile_wire_us+=ack_started-wire_started;profile_packets++;
     int64_t until=now()+3000000;bool done=false,ok=false;
     while(sent&&now()<until&&!stopped()){
@@ -211,6 +217,10 @@ static bool rpc_binary_block(const uint8_t *raw,size_t bytes,size_t offset){
         }
         portENTER_CRITICAL(&lock);int code=rpc_error;size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
         printf("@native_rpc {\"op\":\"chunk\",\"attempt\":%u,\"code\":%d,\"received\":%u,\"expected\":%u}\n",attempt+1,code,(unsigned)acknowledged,(unsigned)(offset+bytes));fflush(stdout);
+        if(attempt<2&&code==-1&&direct_recoveries<2&&!stopped()&&muse_module_llm_recover_idle_link()){
+            direct_recoveries++;portENTER_CRITICAL(&lock);progress.recoveries=direct_recoveries;portEXIT_CRITICAL(&lock);
+            printf("@native_direct {\"event\":\"recovering_transfer\",\"attempt\":%u,\"offset\":%u}\n",direct_recoveries,(unsigned)offset);fflush(stdout);
+        }
         if(attempt<2)pause_ms(100*(attempt+1));
     }
     return false;
@@ -228,6 +238,9 @@ static bool rpc(cJSON *data,bool cleanup=false){
         if(!cleanup){
             portENTER_CRITICAL(&lock);int code=rpc_error;size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
             printf("@native_rpc {\"op\":\"%s\",\"attempt\":%u,\"code\":%d,\"received\":%u,\"expected\":%u}\n",op?op:"unknown",attempt+1,code,(unsigned)acknowledged,(unsigned)expected_received);fflush(stdout);
+            if(attempt<2&&code==-1&&direct_recoveries<2&&!stopped()&&muse_module_llm_recover_idle_link()){
+                direct_recoveries++;portENTER_CRITICAL(&lock);progress.recoveries=direct_recoveries;portEXIT_CRITICAL(&lock);
+            }
             pause_ms(500*(attempt+1));
         }
     }
@@ -381,7 +394,7 @@ static void worker(void *){
 static constexpr size_t DIRECT_CAP=256*1024;
 EXT_RAM_BSS_ATTR static uint8_t direct_ring[DIRECT_CAP];
 // The single job owner reuses this bounded PSRAM block, outside its task stack.
-EXT_RAM_BSS_ATTR static uint8_t direct_block[8192];
+EXT_RAM_BSS_ATTR static uint8_t direct_block[4096];
 static size_t direct_read,direct_write,direct_used;
 static int direct_status;
 static bool direct_done,direct_failed;
@@ -414,6 +427,8 @@ static void direct_cb(void *context,int status,const uint8_t *data,size_t length
 }
 static bool direct_transfer(bool legacy){
     profile_wire_us=profile_ack_us=0;profile_packets=0;int64_t source_wait_us=0;
+    direct_failure.store(20); // cache/session preparation
+    portENTER_CRITICAL(&lock);direct_status=0;portEXIT_CRITICAL(&lock);
     char encoded_id[400],path[512];size_t pos=0;
     for(const unsigned char *p=(const unsigned char *)direct_message;*p;p++){
         unsigned char c=*p;
@@ -427,15 +442,17 @@ static bool direct_transfer(bool legacy){
         printf("@native_direct {\"event\":\"cache_begin_failed\",\"code\":%d}\n",error);fflush(stdout);return false;
     }
     portENTER_CRITICAL(&lock);bool cached=rpc_complete;size_t cached_bytes=rpc_received;portEXIT_CRITICAL(&lock);
-    if(cached&&cached_bytes>=128){buffered(cached_bytes,cached_bytes);phase(4);state.store(1);return true;}
+    if(cached&&cached_bytes>=128){direct_failure.store(0);buffered(cached_bytes,cached_bytes);phase(4);state.store(1);return true;}
     // A retry re-downloads the immutable message and verifies already admitted
     // blocks too. The receiver accepts identical duplicates, never replacements.
     portENTER_CRITICAL(&lock);
     direct_read=direct_write=direct_used=direct_max_frame=0;direct_status=0;direct_done=direct_failed=false;uint32_t token=++direct_token;
     portEXIT_CRITICAL(&lock);
     const char *headers[]={"Accept","audio/mpeg",nullptr};
+    direct_failure.store(21); // paired request could not open
     int64_t request=muse_link_req_open("GET",path,headers,true,direct_cb,(void *)(uintptr_t)token);
     if(!request)return false;
+    direct_failure.store(22); // download/source error unless superseded below
     psa_hash_operation_t digest=PSA_HASH_OPERATION_INIT;
     bool okay=psa_hash_setup(&digest,PSA_ALG_SHA_256)==PSA_SUCCESS,finished=false;
     auto &block=direct_block;size_t offset=0;int status=0;
@@ -453,8 +470,8 @@ static bool direct_transfer(bool legacy){
         if(failed||(status&&!(status>=200&&status<300))){okay=false;break;}
         if(count){
             if(!first){first=now();printf("@native_direct {\"event\":\"first_audio\",\"ms\":%u}\n",(unsigned)((first-started_us)/1000));fflush(stdout);}
-            if(offset+count>32*1024*1024||psa_hash_update(&digest,block,count)!=PSA_SUCCESS){okay=false;break;}
-            if(!rpc_binary_block(block,count,offset)){okay=false;break;}
+            if(offset+count>32*1024*1024||psa_hash_update(&digest,block,count)!=PSA_SUCCESS){direct_failure.store(24);okay=false;break;}
+            if(!rpc_binary_block(block,count,offset)){direct_failure.store(23);okay=false;break;}
             offset+=count;buffered(offset,0);
         }else if(finished)break;
         else{int64_t waiting=now();pause_ms(5);source_wait_us+=now()-waiting;}
@@ -463,33 +480,36 @@ static bool direct_transfer(bool legacy){
     if(!finished||!okay||stopped())muse_link_req_cancel(request);
     okay=okay&&finished&&!stopped()&&status>=200&&status<300&&offset>=128;
     if(okay){
+        direct_failure.store(24); // final hash/decoder admission
         phase(3);uint8_t binary[32];size_t written=0;char hash[65];
         okay=psa_hash_finish(&digest,binary,sizeof(binary),&written)==PSA_SUCCESS&&written==32;
         if(okay){for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",binary[i]);cJSON *end=operation("end");cJSON_AddNumberToObject(end,"bytes",offset);cJSON_AddStringToObject(end,"sha256",hash);okay=rpc(end);}
     }
     psa_hash_abort(&digest);
-    if(okay){buffered(offset,offset);phase(4);state.store(1);}
+    if(okay){direct_failure.store(0);buffered(offset,offset);phase(4);state.store(1);}
     else rpc(operation("abort"),true);
     printf("@native_direct {\"event\":\"download_end\",\"ok\":%s,\"status\":%d,\"bytes\":%u,\"max_frame\":%u,\"ms\":%u,\"wire_ms\":%u,\"ack_ms\":%u,\"source_wait_ms\":%u,\"packets\":%u}\n",okay?"true":"false",status,(unsigned)offset,(unsigned)direct_max_frame,(unsigned)((now()-started_us)/1000),(unsigned)(profile_wire_us/1000),(unsigned)(profile_ack_us/1000),(unsigned)(source_wait_us/1000),profile_packets);fflush(stdout);
     // Match the official client: only a 404 selects the legacy endpoint.
     return okay;
 }
+static bool native_direct_retryable(int status){return status!=400&&status!=401&&status!=403;}
 static void direct_worker(void *){
     bool ready=false;
     for(unsigned attempt=0;attempt<2&&!stopped();attempt++){
-        if(attempt){phase(7);pause_ms(500);}
+        if(attempt){portENTER_CRITICAL(&lock);if(progress.recoveries<attempt)progress.recoveries=attempt;portEXIT_CRITICAL(&lock);phase(7);pause_ms(500);}
         ready=direct_transfer(false);
         portENTER_CRITICAL(&lock);int status=direct_status;portEXIT_CRITICAL(&lock);
         if(!ready&&status==404&&!stopped())ready=direct_transfer(true);
         if(ready)break;
+        if(!native_direct_retryable(status))break; // access failures need attention, not a retry loop
     }
-    if(!ready){phase(stopped()?6:5,8);if(!stopped())state.store(-1);}
+    if(!ready){phase(stopped()?6:5,direct_failure.load()?direct_failure.load():8);if(!stopped())state.store(-1);}
     running.store(false);vTaskDeleteWithCaps(nullptr);
 }
 bool muse_native_voice_begin_message(const char *message,const char *text,uint32_t gen){
     if(!message||!*message||strlen(message)>=sizeof(direct_message)||!text||!*text||strlen(text)>=sizeof(script))return false;
     bool expected=false;if(!running.compare_exchange_strong(expected,true))return false;
-    generation=gen;strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
+    generation=gen;direct_recoveries=0;direct_failure.store(0);strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
     for(unsigned i=0;i<3;i++)snprintf(job+8*i,9,"%08lx",(unsigned long)esp_random());
     cancelled.store(false);state.store(0);
     portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,job,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
@@ -498,7 +518,7 @@ bool muse_native_voice_begin_message(const char *message,const char *text,uint32
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
     bool expected=false;if(!key||strlen(key)!=24||!running.compare_exchange_strong(expected,true))return false;
     for(const char *p=key;*p;p++)if(!((*p>='0'&&*p<='9')||(*p>='a'&&*p<='f'))){running.store(false);return false;}
-    generation=gen;selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
+    generation=gen;direct_recoveries=0;direct_failure.store(0);selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
     portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,key,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
     if(xTaskCreatePinnedToCoreWithCaps(worker,"muse_native",16384,nullptr,3,nullptr,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){running.store(false);state.store(-1);return false;}return true;
 }
@@ -510,4 +530,18 @@ void muse_native_voice_cancel(){cancelled.store(true);}
 
 bool muse_native_voice_rebind(uint32_t previous,uint32_t current){if(generation!=previous||cancelled.load()||state.load()<0)return false;generation=current;return true;}
 void muse_native_voice_status(muse_native_voice_status_t *out){if(!out)return;portENTER_CRITICAL(&lock);*out=progress;out->elapsed_ms=started_us?(unsigned)((now()-started_us)/1000):0;portEXIT_CRITICAL(&lock);out->active=running.load();}
+static const char *native_failure_title(unsigned failure,int status){
+    if((failure==21||failure==22)&&status==429)return "MUSE VOICE BUSY - RETRY";
+    if((failure==21||failure==22)&&(status==401||status==403))return "VOICE ACCESS DENIED";
+    if((failure==21||failure==22)&&status==404)return "MUSE VOICE UNAVAILABLE";
+    switch(failure){
+    case 20:return "VOICE CACHE - RESTART";
+    case 21:return "VOICE LINK - RESTART";
+    case 22:return "VOICE DOWNLOAD - RESTART";
+    case 23:return "VOICE TRANSFER - RESTART";
+    case 24:return "AUDIO CHECK - RESTART";
+    default:return "VOICE FAILED - RESTART";
+    }
+}
+const char *muse_native_voice_error_title(void){portENTER_CRITICAL(&lock);int status=direct_status;portEXIT_CRITICAL(&lock);return native_failure_title(direct_failure.load(),status);}
 void muse_native_voice_answer_ready(uint32_t gen,bool pending){if(gen!=generation)return;portENTER_CRITICAL(&lock);if(pending)answer_ready_us=0;else if(!answer_ready_us)answer_ready_us=now();portEXIT_CRITICAL(&lock);}

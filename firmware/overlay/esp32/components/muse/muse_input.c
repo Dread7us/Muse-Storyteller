@@ -913,6 +913,11 @@ static bool console_command(char *line, bool whole)
         chat_cancel();
         return true;
     }
+    if(!strncmp(line,"chat.native=",12)){
+        bool queued=whole&&s_chat&&muse_chat_native_message_fixture(line+12,s_chat);
+        free(s_chat);s_chat=NULL;s_chat_len=0;
+        printf("@native_replay {\"queued\":%s}\n",queued?"true":"false");fflush(stdout);return true;
+    }
     bool last = !strncmp(line, "chat=", 5);
     if (last || !strncmp(line, "chat+=", 6)) {
         chat_line(line + (last ? 5 : 6), last, whole);

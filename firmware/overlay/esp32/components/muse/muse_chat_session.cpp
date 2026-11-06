@@ -152,7 +152,7 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE };
+                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE, CMD_NATIVE_MESSAGE_FIXTURE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -1718,7 +1718,7 @@ static void start_tts(void)
                 }
                 char key[25];int ready=muse_native_voice_copy(s_turn.gen,s_turn.texts+i*TEXT_MAX,TEXT_MAX,key);
                 if(ready==0){muse_state_set_caption("Buffering Muse audio...");return;}
-                if(ready!=1){s_can_restart=true;turn_fail("MUSE AUDIO FAILED - TAP RESTART");return;}
+                if(ready!=1){s_can_restart=true;turn_fail(muse_native_voice_error_title());return;}
                 strlcpy(m.external_key,key,sizeof(m.external_key));s_turn.native_started=false;
                 // Each finished assistant message gets its own immutable clip.
                 // Do not skip later messages, paragraphs or list items.
@@ -2423,11 +2423,26 @@ static void restart_reply(void)
         s_replaying=false;
         if(!muse_native_voice_rebind(previous,s_turn.gen))s_turn.native_started=false;
     }
+    // A failed/cancelled direct fetch cannot be copied under the new generation.
+    // Rebind a healthy in-flight job; otherwise allow a fresh fetch of the same ID.
+    if(s_turn.native_direct && s_turn.native_started && !muse_native_voice_rebind(previous,s_turn.gen))s_turn.native_started=false;
     s_restart_wait=true;emit(MUSE_HATCH_EV_HEARD,"Restarting reply...");
 }
 static void handle(const cmd_t &cmd)
 {
     switch (cmd.type) {
+    case CMD_NATIVE_MESSAGE_FIXTURE:
+        if(cmd.text && s_turn.phase==P_IDLE && !muse_memory_recorder_active()){
+            char *text=strchr(cmd.text,'\n');
+            if(text){*text++=0;
+                if(turn_start(++s_gen,false,true)){
+                    s_bench_reply=true;s_local_only=true;s_turn.native_direct=true;s_turn.phase=P_WAIT_REPLY;s_turn.chat_posted=true;
+                    s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();s_turn.nmsgs=1;s_turn.msgs[0]=msg_t{};
+                    strlcpy(s_turn.msgs[0].id,cmd.text,sizeof(s_turn.msgs[0].id));
+                    emit(MUSE_HATCH_EV_HEARD,"Replaying saved Muse reply...");message_done(0,text);
+                }
+            }
+        }free(cmd.text);break;
     case CMD_NATIVE_FIXTURE:
         if(turn_start(++s_gen,false,false)){
             s_bench_reply=true;s_local_only=true;s_turn.phase=P_WAIT_REPLY;s_turn.chat_posted=true;s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();s_turn.nmsgs=1;s_turn.msgs[0]=msg_t{};
@@ -2903,5 +2918,15 @@ extern "C" bool muse_chat_native_probe(void){if(!s_cmds)return false;cmd_t c{CMD
 extern "C" bool muse_chat_native_file(uint32_t offset){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FILE,offset,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
 
 extern "C" bool muse_chat_native_fixture(void){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FIXTURE,0,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
+
+extern "C" bool muse_chat_native_message_fixture(const char *id,const char *text){
+    if(!s_cmds||s_turn.phase!=P_IDLE||!id||!*id||strlen(id)>=sizeof(s_turn.msgs[0].id)||!text||!*text||strlen(text)>=TEXT_MAX||muse_memory_recorder_active())return false;
+    for(const char *p=id;*p;p++)if(!isalnum((unsigned char)*p)&&*p!='-'&&*p!='_')return false;
+    muse_module_llm_status_t voice;muse_module_llm_status(&voice);muse_native_voice_status_t native;muse_native_voice_status(&native);
+    if(voice.state!=MUSE_MODULE_LLM_READY||native.active)return false;
+    size_t n=strlen(id)+strlen(text)+2;char *owned=(char *)malloc(n);if(!owned)return false;
+    snprintf(owned,n,"%s\n%s",id,text);cmd_t c{CMD_NATIVE_MESSAGE_FIXTURE,0,owned};
+    if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(owned);return false;}return true;
+}
 
 extern "C" bool muse_chat_native_fixture_key(const char *key){if(!s_cmds||!key||strlen(key)!=24)return false;for(const char *p=key;*p;p++)if(!isxdigit((unsigned char)*p))return false;char *copy=strdup(key);if(!copy)return false;cmd_t c{CMD_NATIVE_FIXTURE,0,copy};if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(copy);return false;}return true;}

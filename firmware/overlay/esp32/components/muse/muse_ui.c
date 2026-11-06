@@ -2655,7 +2655,7 @@ static void update_status(muse_mode_t mode, float now)
         else snprintf(preparing_label,sizeof(preparing_label),"CREATING VOICE %us",native.elapsed_ms/1000);
         name=preparing_label;
     }
-    if(!native.active && native.phase==5 && mode==MUSE_MODE_IDLE && muse_settings_voice_source()==1 && muse_chat_playback_can_restart())name="VOICE ERROR - RESTART";
+    if(!native.active && native.phase==5 && mode==MUSE_MODE_IDLE && muse_settings_voice_source()==1 && muse_chat_playback_can_restart())name=muse_native_voice_error_title();
     if(playback_status.pause_requested)name=playback_status.paused?"PAUSED":"PAUSING";
     else if(playback_status.paused)name="RESUMING";
     if(muse_memory_recorder_active())name="RECORDING";

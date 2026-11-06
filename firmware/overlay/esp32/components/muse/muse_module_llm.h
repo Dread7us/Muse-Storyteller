@@ -56,6 +56,8 @@ typedef enum {
 bool muse_module_llm_send_line(const char *json);
 /* Serial maintenance fixture: rejects recording, playback and native transfers. */
 bool muse_module_llm_test_framing_stall(void);
+/* Bounded transfer owner recovery; refuses capture/playback/Recorder work. */
+bool muse_module_llm_recover_idle_link(void);
 /* Vendor RAW header, exact binary body, then its framing newline. */
 bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length);
 void muse_module_llm_session(char out[9]);

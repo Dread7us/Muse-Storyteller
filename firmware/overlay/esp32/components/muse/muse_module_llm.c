@@ -42,6 +42,8 @@ static QueueHandle_t s_commands;
 static unsigned s_diag_op,s_diag_rx;static int64_t s_diag_at;
 static SemaphoreHandle_t s_tx_mutex;
 static char s_cloud_session[9];
+static unsigned s_recovery_seq,s_recovery_request,s_recovery_done;
+static bool s_recovery_ok;
 bool muse_module_llm_send_line(const char *json){
     if(!s_tx_mutex || !json)return false;
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);size_t n=strlen(json);
@@ -504,6 +506,22 @@ if(r->operation==OP_SPEAK && r->accepted){
 }
 }
 
+bool muse_module_llm_recover_idle_link(void){
+    if(muse_memory_recorder_active())return false;
+    portENTER_CRITICAL(&s_lock);unsigned token=++s_recovery_seq;s_recovery_request=token;portEXIT_CRITICAL(&s_lock);
+    int64_t deadline=esp_timer_get_time()+3000000LL;
+    while(esp_timer_get_time()<deadline){
+        portENTER_CRITICAL(&s_lock);bool done=s_recovery_done==token,ok=s_recovery_ok;portEXIT_CRITICAL(&s_lock);
+        if(done)return ok;
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    portENTER_CRITICAL(&s_lock);if(s_recovery_request==token)s_recovery_request=0;portEXIT_CRITICAL(&s_lock);return false;
+}
+
+static bool transfer_recovery_allowed(unsigned op,bool commands_pending){
+    return !commands_pending&&!muse_memory_recorder_active()&&(op==OP_NONE||op==OP_HELLO||op==OP_STATUS);
+}
+
 static void check_deadline(runtime_t *r, int64_t now)
 {
     if(r->operation==OP_SPEAK && r->pause_since)return;
@@ -556,6 +574,14 @@ static void runtime_task(void *unused)
             if(!r.stable_ready_since)r.stable_ready_since=now;
             if(now-r.stable_ready_since>=60000000LL)r.framing_recoveries=0;
         }else r.stable_ready_since=0;
+        portENTER_CRITICAL(&s_lock);unsigned recovery=s_recovery_request;s_recovery_request=0;portEXIT_CRITICAL(&s_lock);
+        if(recovery){
+            // Only the operation owner may reset framing. User capture/control
+            // commands win, and no listening or playback can start concurrently.
+            bool permitted=transfer_recovery_allowed(r.operation,uxQueueMessagesWaiting(s_commands)>0);
+            if(permitted){recover_uart_framing();ESP_LOGW(TAG,"recovering idle voice transfer");}
+            portENTER_CRITICAL(&s_lock);s_recovery_done=recovery;s_recovery_ok=permitted;portEXIT_CRITICAL(&s_lock);
+        }
         portENTER_CRITICAL(&s_lock);
         bool monitor = s_monitor, monitor_changed = s_monitor_changed;
         s_monitor_changed = false;

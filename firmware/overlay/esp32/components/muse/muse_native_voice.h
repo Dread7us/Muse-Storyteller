@@ -22,6 +22,7 @@ typedef struct {
 } muse_native_voice_status_t;
 /* 1 waiting for Muse, 2 buffering, 3 verifying, 4 ready, 5 failed, 6 cancelled, 7 recovering. */
 void muse_native_voice_status(muse_native_voice_status_t *out);
+const char *muse_native_voice_error_title(void);
 void muse_native_voice_answer_ready(uint32_t generation,bool pending);
 #ifdef __cplusplus
 }

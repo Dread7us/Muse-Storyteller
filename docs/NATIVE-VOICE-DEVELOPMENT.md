@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.6 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.7 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -47,13 +47,21 @@ Full buffering prevents network gaps during narration, but still adds a wait
 proportional to clip length and the Core2-to-Module transfer rate. It is not a
 promise of immediate playback or a sustained UI frame rate.
 
-Audio blocks use the vendor's `RAW` header + exact binary body + framing newline,
-avoiding base64 expansion over UART. The router converts the body locally before
-dispatch. Each block's key, offset, size and audio digest are protected by a
-header checksum; the decoded body is checked separately, then the complete MP3
-is verified at EOF. Direct narration sends bounded 8 KiB blocks from a reusable
-PSRAM buffer, without encoding and decoding those bytes again on Core2. A missing
-block acknowledgement is retried within a bounded three-second window. Text/control packets use the protected ASCII envelope.
+Edition 0.3.7 sends each 4 KiB audio block as one base64 string in a JSON packet,
+with its existing `raw_info` metadata. It avoids the vendor's binary RAW framing
+state, which stalled during a longer real reply. Each block's key, offset, size
+and audio digest remain protected by a header checksum; the decoded body is checked
+separately, then the complete MP3 is verified at EOF. The receiver uses its existing
+verified admission path; this does not weaken either checksum.
+
+A missing block acknowledgement is retried within a bounded three-second window.
+At most two transfer framing recoveries are allowed per job, coordinated on the
+UART operation owner; recording, playback and queued user commands take priority.
+Identical acknowledged blocks can be retried safely. Failure keeps the text and
+offers Restart, with separate cache, connection, download, transfer and final-check
+messages. A failed direct job is replaced on Restart; a healthy running job is
+rebound to the new playback generation. Text/control packets retain their protected
+ASCII envelope.
 This requires the matching Core2 firmware and Module bridge. Optional timing
 runs on one low-priority CPU thread so it cannot monopolize both Module cores.
 

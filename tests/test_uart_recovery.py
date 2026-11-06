@@ -6,6 +6,7 @@ def harness():
     source=(ROOT/'firmware/overlay/esp32/components/muse/muse_module_llm.c').read_text()
     send=source[source.index('bool muse_module_llm_send_line('):source.index('void muse_module_llm_session(')]
     deadline=source[source.index('static void check_deadline('):source.index('static void runtime_task(')]
+    policy=source[source.index('static bool transfer_recovery_allowed('):source.index('static void check_deadline(')]
     return r'''
 #include <cassert>
 #include <cstdint>
@@ -29,7 +30,7 @@ static void recover_uart_framing(){recovered++;}
 static void set_playback(int){}
 #define MUSE_MODULE_LLM_PLAYBACK_FAILED 10
 static void cancel_operation(runtime_t*,bool){cancelled++;}
-''' + deadline + r'''
+''' + policy + deadline + r'''
 static bool s_tx_mutex=true;static std::string wire;static std::vector<size_t> bursts;static int waits=0,fail_write=-1;
 #define portMAX_DELAY 0
 #define CONFIG_MUSE_MODULE_LLM_UART_NUM 1
@@ -51,6 +52,8 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];runtime_t r
  else if(c=="cap"){r.framing_recoveries=2;check_deadline(&r,100);assert(!recovered);}
  else if(c=="cooldown"){r.next_framing_recovery=200;check_deadline(&r,100);assert(!recovered);}
  else if(c=="early"){check_deadline(&r,99);assert(!recovered&&r.operation==OP_HELLO&&s_ready);}
+ else if(c=="transfer_policy"){assert(transfer_recovery_allowed(OP_NONE,false)&&transfer_recovery_allowed(OP_STATUS,false));assert(!transfer_recovery_allowed(OP_NONE,true)&&!transfer_recovery_allowed(OP_SPEAK,false)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false)&&!transfer_recovery_allowed(OP_LISTEN,false));}
+ else if(c=="transfer_recorder"){protected_recorder=true;assert(!transfer_recovery_allowed(OP_NONE,false)&&!transfer_recovery_allowed(OP_HELLO,false));}
  else if(c=="pacing"){for(size_t n:{2,147,179,900,1024,5000}){wire.clear();bursts.clear();waits=0;std::string payload(n,'a');assert(muse_module_llm_send_line(payload.c_str()));assert(wire==payload+"\n");assert(*std::max_element(bursts.begin(),bursts.end())<=128);assert(waits==(int)((n+127)/128));}}
  else if(c=="write_failure"){fail_write=2;std::string payload(900,'a');assert(!muse_module_llm_send_line(payload.c_str()));assert(wire.size()==128&&bursts.size()==2);}
  else assert(false);
@@ -75,5 +78,7 @@ class UartRecovery(unittest.TestCase):
     def test_recovery_attempt_cap(self):self.case('cap')
     def test_recovery_cooldown(self):self.case('cooldown')
     def test_no_recovery_before_deadline(self):self.case('early')
+    def test_transfer_recovery_yields_to_capture_and_queued_commands(self):self.case('transfer_policy')
+    def test_transfer_recovery_protects_recorder(self):self.case('transfer_recorder')
     def test_small_and_large_json_are_paced_without_byte_changes(self):self.case('pacing')
     def test_failed_write_stops_before_next_frame(self):self.case('write_failure')
