@@ -11,10 +11,10 @@ def main():
     python=environment/'bin'/'python3'
     if not python.exists():venv.EnvBuilder(with_pip=False).create(environment)
     if subprocess.run([str(python),'-m','pip','--version'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
-        installer=[str(python),'-m','pip']
-    elif shutil.which('uv'):installer=['uv','pip','--python',str(python)]
-    else:installer=[sys.executable,'-m','pip','--python',str(python)]
-    subprocess.run(installer+['install','--disable-pip-version-check','--only-binary=:all:',
+        installer=[str(python),'-m','pip','--disable-pip-version-check','install']
+    elif shutil.which('uv'):installer=['uv','pip','install','--python',str(python)]
+    else:installer=[sys.executable,'-m','pip','--disable-pip-version-check','--python',str(python),'install']
+    subprocess.run(installer+['--only-binary=:all:',
         'faster-whisper==1.2.1','ctranslate2==4.8.5'],check=True,timeout=240)
     model=root/'models'/'tiny.en';model.mkdir(parents=True,exist_ok=True)
     code="from huggingface_hub import snapshot_download;snapshot_download('Systran/faster-whisper-tiny.en',revision="+repr(REVISION)+",local_dir="+repr(str(model))+",allow_patterns=['model.bin','config.json','tokenizer.json','vocabulary.txt'],token=False)"
