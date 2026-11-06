@@ -2,7 +2,10 @@
 
 ## 0.4.1
 
-- Retry word alignment with analysis-only silence padding, keeping the original audio unchanged and retaining measured word anchors.
+- Use a dedicated English acoustic CTC model for word boundaries, while Tiny Whisper separately checks generated speech for mismatch/repetition. This avoids zero-length word anchors produced by the former attention-based timing analyzer.
+- Preserve the following word and its original highlight span after a bare clock time such as "9:40 will".
+- Recheck failed timing jobs using their existing audio, with source/plan/hash checks and metadata backups; no new speech is required for a timing-only repair.
+- Reject an unexpected second copy of a phrase, including short whole-script loops; retry recognition before rejecting a suspicious section.
 - Explicitly stop the background transfer on Stop, preserving verified sections for Restart.
 - Use standard resumable HTTPS for the one-time public checker-model download.
 

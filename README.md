@@ -38,6 +38,9 @@ The opening can play while later sections arrive; real word timings travel with 
 section, and incorrect or repeating generated speech is retried before admission.
 Pause, live volume, Stop and cached Restart stay available during narration and buffering.
 This path requires the matching Muse-side helpers described in the setup notes.
+Fresh online replies still depend on Muse's response and audio-generation time;
+the latest successful fresh-response check took about 50 seconds to first speech.
+See the [measured checks and remaining limit](docs/VALIDATION.md#editions-040041-verified-sentence-narration).
 
 Sound now also offers **Muse app voice – direct**: it retrieves the response's
 native audio without asking Muse to create and deliver a separate file. It uses

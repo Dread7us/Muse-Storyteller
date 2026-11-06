@@ -5,6 +5,9 @@ licensed under Apache License 2.0. Original source notices are retained.
 
 Uses external M5Stack StackFlow services, Whisper and Piper assets under their
 respective licenses. These native distributions and model weights are not bundled.
+Optional English narration timing uses Meta's Apache-2.0 Wav2Vec2 base-960h model,
+with Xenova's ONNX conversion and the MIT-licensed ONNX Runtime. These model assets
+are downloaded separately and are not bundled in this repository.
 LVGL modifications retain LVGL's MIT licensing; generated fonts retain upstream
 font notices and applicable font licenses. Upstream artwork is not relicensed here.
 

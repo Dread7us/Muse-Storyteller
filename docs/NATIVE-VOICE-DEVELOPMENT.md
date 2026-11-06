@@ -79,12 +79,15 @@ script; it is not applied automatically by the source preparation helper.
 Muse writes the exact response script and launches `tools/muse_vm_tts_job.py`
 with `--sections` using its existing built-in speech facility. Two bounded workers
 prepare short sections in script order. A free local English Whisper Tiny checker
-in the same Muse VM verifies script agreement and unexpected repetition, then
-aligns every spoken word to the decoded audio. A rejected section is synthesized
+in the same Muse VM verifies script agreement and unexpected repetition. A dedicated
+English Wav2Vec2 acoustic model then aligns every spoken word to the decoded audio.
+Its bounded CTC path assigns each character a real acoustic frame span and derives
+word boundaries from those spans. Low-confidence alignment remains an explicit failure.
+A rejected section is synthesized
 once more; a second failure becomes an explicit error rather than unchecked speech.
-Word alignment can retry with silence around its analysis window. The delivered
-audio is unchanged; this corrects unstable edge anchors without replacing them
-with whole-clip proportional estimates.
+The voice audio is unchanged by alignment. This replaces the former attention-based
+timing analyzer, which could squeeze correctly spoken words into zero-length anchors
+even after padding/filter retries. No whole-clip proportional estimates are used here.
 
 Core2 retrieves the plan, each MP3, checksum and word anchors over its existing
 authenticated native file connection. The Module verifies the script, pronunciation,
@@ -115,15 +118,20 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
   on that VM, with the matching `module/runtime/muse_speech_text.py` beside it.
   Use an immutable repository revision and verify SHA-256 after downloading;
   do not have an LLM retype or reconstruct the helper.
-- Install `muse_vm_sections.py`, `muse_vm_speech_check.py` and
-  `prepare_vm_sections.py` beside the helper. Run the preparation helper once in
+- Install `muse_vm_sections.py`, `muse_vm_speech_check.py`,
+  `muse_ctc_alignment.py` and `prepare_vm_sections.py` beside the helper. Run the preparation helper once in
   the existing Muse VM; it creates an isolated `voice-env`, pins faster-whisper
-  and CTranslate2, and downloads a pinned public Tiny English model. It reports
-  `sections-ready.json` only after loading the local checker successfully. No
+  CTranslate2 and CPU ONNX Runtime, and downloads pinned public Tiny English and
+  quantized English acoustic models. Their revisions and acoustic-asset hashes
+  are fixed in the helper. It reports `sections-ready.json` only after loading
+  both local checker models successfully. No
   browser credentials, exported account token, PC process or paid speech service
   is required. The section helper runs with `voice-env/bin/python3`.
   The one-time model download uses standard HTTPS with its existing resumable
   cache, avoiding the optional Xet transport that stalled the reference setup.
+  The acoustic model is the [Wav2Vec2 base-960h ONNX conversion](https://huggingface.co/Xenova/wav2vec2-base-960h),
+  based on [Meta's English model](https://huggingface.co/facebook/wav2vec2-base-960h).
+  These models run inside the existing Muse VM, rather than during Module playback.
 - The Module requires compatible ARM64 Python CTranslate2 and tokenizers packages,
   NumPy, a Tiny English CTranslate2 Whisper model, faster-whisper's matching
   feature extractor/tokenizer helpers, and the SDK's CC0 minimp3 decoder compiled

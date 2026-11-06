@@ -30,6 +30,9 @@ class Plans(unittest.TestCase):
   phrase='The blue lantern is glowing'
   self.assertFalse(repeated_speech((phrase+'. ')*4,(phrase+'. ')*4))
   self.assertTrue(repeated_speech(phrase,(phrase+'. ')*8))
+  self.assertTrue(repeated_speech(phrase,(phrase+'. ')*2))
+  self.assertTrue(repeated_speech('Go home.','Go home. Go home.'))
+  self.assertTrue(repeated_speech('Hello.','Hello. Hello.'))
   self.assertFalse(repeated_speech('The keeper came home.','The keeper came home.'))
 
 class SeriesTests(unittest.TestCase):

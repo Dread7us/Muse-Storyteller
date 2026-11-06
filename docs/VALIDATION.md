@@ -450,3 +450,54 @@ confirmation and Aria/60% were restored. After an idle interval, another fresh
 reply started in 23.8 seconds and finished through its final word without a
 transfer retry. DMA headroom remained around 20 KiB, and the raw/control links
 stayed up through the sequence that had previously stalled.
+
+## Editions 0.4.0–0.4.1 verified sentence narration
+
+The reported repeated sentence was present in generated audio, rather than being
+only a display problem. The previous long-clip timing fallback could also drift
+independently of speech. The new Helio/Aria route prepares bounded, sentence-aware
+sections with two generation workers. Tiny English Whisper checks actual speech
+against the script and rejects unexpected repetition. A separate quantized English
+Wav2Vec2 acoustic model assigns word boundaries using a bounded CTC path; missing,
+zero-length or low-confidence anchors fail explicitly. Accepted sections carry
+source, MP3 and decoded-audio checksums. Playback uses complete sentence buffers.
+
+The reference v0.4.1 application compiled, passed application-slot write/digest and
+boot checks, and retained Aria, 60% volume and pairing. A complete 144.252-second
+public story played all 22 sections and 460 word anchors, reaching its final text
+byte. Another 173.808-second story played all 28 sections and reached its final
+word; all of those saved sections also passed the final acoustic analyzer.
+Independent whole-file recognition checks found no unexpected repeated phrases
+in either generated story. These are controlled observations, not an accuracy
+guarantee for all future generated speech.
+
+With the screen awake, Pause/Resume, live volume adjustment, Sound access, reader
+resizing, Stop and Restart passed. Cached Restart began at the opening words in
+0.60 seconds. A separate partial-transfer Restart check took 1.04 seconds and
+continued the producer rather than treating a partial cache as complete. Pausing
+and live volume changes now bookmark the actual audio clock, and delayed display
+events skip obsolete words rather than rapidly emitting a catch-up sequence.
+Local Piper also spoke and completed; Aria and 60% volume were restored.
+
+Startup remains a material limit. Replaying an already generated long story into
+a cold device cache began in 6.27 seconds of buffering, which excludes Muse text
+and speech generation. A genuinely fresh public reply took 50.02 seconds to first
+speech: its text completed around 36 seconds. It then played all eight sections,
+176 word anchors and 55.548 seconds of audio through its final word, completing
+about 55.83 seconds after first speech. The faster documented native file-write
+route returned HTTP 403 on this installation. That experiment was removed; the
+installed path keeps the supported Muse-generated-file workflow. Neither a fresh
+six-second start nor elimination of the server delay has been demonstrated.
+
+Final read-only checks matched the installed Module sources, confirmed Recorder
+and playback idle, preserved all 382 original archive messages and passed SQLite
+integrity. The existing ADB server, tablet and SuperDisplay remained connected;
+no ADB restart, tablet routing change, pairing reset or NVS erase was used.
+
+The Linux source/runtime suite passed all 129 tests, including real bounded CTC
+paths, repeated-letter handling, unexpected audio repetition, audio-clock replay,
+section ordering, exact decoded length, hash validation, buffering and cancellation.
+The Windows run with the isolated analysis dependencies passed 88 tests with 19
+platform skips. The initial branch workflow failed because a new test called
+`.case` instead of `.run_case`; correcting that test restored successful checks.
+Private recordings, transcripts, logs, account state and device backups remain local.

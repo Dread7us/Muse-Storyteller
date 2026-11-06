@@ -5,10 +5,11 @@ def lexical(text):return re.findall(r"[a-z0-9']+",text.lower())
 
 def repeated_speech(expected,heard):
     a,b=lexical(expected),lexical(heard)
+    if a and len(b)>=2*len(a) and any(b[i:i+len(a)]==a and b[i+len(a):i+2*len(a)]==a for i in range(len(b)-2*len(a)+1)):return True
     for width in (4,6,8):
         reference=collections.Counter(tuple(a[i:i+width]) for i in range(len(a)-width+1))
         observed=collections.Counter(tuple(b[i:i+width]) for i in range(len(b)-width+1))
-        if any(count>max(2,reference[phrase]+1) for phrase,count in observed.items()):return True
+        if any(count>max(1,reference[phrase]) for phrase,count in observed.items()):return True
     return False
 
 class SpeechCheck:
@@ -28,13 +29,15 @@ class SpeechCheck:
         with self.lock:
             # Recognition checks what the generator actually said. Alignment
             # alone must not force unrelated or looping audio onto the script.
-            segments,_=self.model.transcribe(audio,language='en',beam_size=1,condition_on_previous_text=False,
-                temperature=0,vad_filter=False,word_timestamps=False)
-            heard=' '.join(segment.text.strip() for segment in segments)
-            normalized_heard=SpeechText(heard).text
-            expected_tokens=lexical(text);heard_tokens=lexical(normalized_heard)
-            agreement=difflib.SequenceMatcher(None,expected_tokens,heard_tokens,autojunk=False).ratio()
-            if repeated_speech(text,normalized_heard) or agreement<.55:raise ValueError('Generated speech differs from its text')
+            for beam in (1,3):
+                segments,_=self.model.transcribe(audio,language='en',beam_size=beam,condition_on_previous_text=False,
+                    temperature=0,vad_filter=False,word_timestamps=False)
+                heard=' '.join(segment.text.strip() for segment in segments)
+                normalized_heard=SpeechText(heard).text
+                agreement=difflib.SequenceMatcher(None,lexical(text),lexical(normalized_heard),autojunk=False).ratio()
+                wrong=repeated_speech(text,normalized_heard) or agreement<.55
+                if not wrong:break
+            if wrong:raise ValueError('Generated speech differs from its text')
             words,confidence=self.acoustic.align(audio,text,first_word)
             return dict(aligned=True,words=words,agreement=round(agreement,4),pcm_samples=len(audio),
                         alignment_method='ctc-english',acoustic_confidence=confidence,alignment_padding=0.,alignment_filter=0)
