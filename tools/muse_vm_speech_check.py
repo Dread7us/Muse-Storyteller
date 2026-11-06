@@ -40,11 +40,17 @@ class SpeechCheck:
                 features=self.model.feature_extractor(padded)
                 frames=min(3000,features.shape[-1],round(len(padded)/160))
                 encoded=self.model.encode(features[:,:3000])
-                aligned=self.model.find_alignment(self.tokenizer,[self.tokenizer.encode(text)],encoded,frames)[0]
-                try:
-                    result=word_anchors(aligned,text,duration,first_word,lead)
-                    return dict(aligned=True,words=result,agreement=round(agreement,4),pcm_samples=len(audio),alignment_padding=lead)
-                except ValueError as exc:last=exc
+                # Whisper emits a leading space before English transcript
+                # tokens. Omitting it can suppress the first token and squeeze
+                # a later word into a zero-length boundary. Narrower attention
+                # filters are real re-alignment attempts, never guessed times.
+                tokens=self.tokenizer.encode(' '+text.lstrip())
+                for width in (7,3,1,11):
+                    aligned=self.model.find_alignment(self.tokenizer,[tokens],encoded,frames,median_filter_width=width)[0]
+                    try:
+                        result=word_anchors(aligned,text,duration,first_word,lead)
+                        return dict(aligned=True,words=result,agreement=round(agreement,4),pcm_samples=len(audio),alignment_padding=lead,alignment_filter=width)
+                    except ValueError as exc:last=exc
             raise last
 
 def word_anchors(aligned,text,duration,first_word=0,lead=0.):
