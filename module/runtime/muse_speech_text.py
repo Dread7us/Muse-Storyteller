@@ -251,8 +251,8 @@ class SpeechText:
                 suffix=' '+' '.join(suffix.strip())
             else:suffix=' A M' if h<12 else ' P M';h=h%12 or 12
             return cardinal(h)+((' oh '+cardinal(minute)) if 0<minute<10 else ' '+cardinal(minute) if minute else ' o clock')+suffix
-        sub(r'\b([0-2]?[0-9]):([0-5][0-9])\s*([aApP]\.?\s*[mM]\.?)?',clock,protect=True)
-        sub(r'\b(1[0-2]|[1-9])\s*([aApP])\.?[mM]\.?',lambda m:cardinal(int(m.group(1)))+' '+m.group(2).upper()+' M',protect=True)
+        sub(r'\b([0-2]?[0-9]):([0-5][0-9])(?![0-9])(?:\s*([aApP]\.?\s*[mM]\.?(?!\w)))?',clock,protect=True)
+        sub(r'\b(1[0-2]|[1-9])\s*([aApP])\.?[mM]\.?(?!\w)',lambda m:cardinal(int(m.group(1)))+' '+m.group(2).upper()+' M',protect=True)
         sub(r'(?i)\b(in|since|during|year|born|until|by|from)\s+(1[6-9][0-9]{2}|20[0-9]{2}|21[0-9]{2})\b',lambda m:m.group(1)+' '+year(int(m.group(2))),protect=True)
         # Comma-grouped quantities retain ordinary cardinal pronunciation.
         sub(r'(?<![\w.])[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?\b',lambda m:cardinal(int(m.group().split('.')[0].replace(',','')))+(' point '+' '.join(DIGITS[int(x)] for x in m.group().split('.')[1]) if '.' in m.group() else ''),protect=True)
