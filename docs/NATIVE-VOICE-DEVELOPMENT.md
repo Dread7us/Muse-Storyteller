@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.7 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.8 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -103,7 +103,7 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
   for the Module. The reference asset root is `/opt/muse-cloud-voice-v41/`, with
   `vendor/`, `tiny-model/`, `feature_extractor.py`, `native_tokenizer.py`, and
   `decode_mp3`. These model/native dependencies are not embedded in this repo.
-- Deploy `muse_native_audio.py`, `muse_cloud_worker.py`, `muse_voice_backend.py`
+- Deploy `muse_native_audio.py`, `muse_alignment_worker.py`, `muse_cloud_worker.py`, `muse_voice_backend.py`
   and `muse_playback_control.py` with the matching `muse_voice_bridge.py`.
   Stop/save Recorder and finish playback first, retain
   exact backups, and validate both local startup and native playback afterward.
@@ -147,8 +147,17 @@ against the VM's final SHA-256. Resume does not permit partial playback.
 Selecting Muse voice no longer silently falls back to Piper on a preparation
 failure; Local voice remains a separate Sound setting. It also shows live preparation
 progress and animates the welcome screen.
+Prepared Helio/Aria downloads use bounded 32 KiB network ranges and separate
+1536-byte checked Module packets. Network batching does not enlarge the UART
+frames. Each request retains its own capacity limit; late callbacks cannot
+overwrite a later request. A known final byte count avoids an extra EOF lookup.
+
 The Module analyzes decoded windows during transfer, then waits for complete
 integrity verification before publishing timings or starting playback.
+Optional neural alignment runs in a separate, low-priority process. Its pipe
+messages and execution time are bounded; failure falls back to complete-audio
+timing without discarding or shortening the voice clip. The analysis worker
+does not inherit the router's sockets or UART handles.
 
 Full buffering trades some initial preparation time for steady narration. A
 complete cached reply restarts without downloading or generating speech again.

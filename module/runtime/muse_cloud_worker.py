@@ -38,6 +38,7 @@ class CloudWorker:
     def __init__(self, emit, response, engine):
         self.emit, self.response, self.engine = emit, response, engine
         self.jobs = queue.Queue(4)
+        self.active = threading.Event()
         self.store = Store()
         engine.native_store = self.store
         self.store.warming = self.store.pool.submit(self.store.warm)
@@ -52,19 +53,27 @@ class CloudWorker:
         while True:
             req = self.jobs.get()
             if req is None:return
+            self.active.set()
             try:
-                with self.engine.lock:
-                    allowed = self.engine.ready and req['session']==self.engine.session
-                if not allowed:raise NativeAudioError('Wait for the paired device session')
-                result = self.store.request(checked_payload(req['data']),req['session'])
-                reply = self.response(req,'cloud',result=result)
-            except Exception as error:
-                message=str(error) if isinstance(error,NativeAudioError) else 'Native audio cache failed'
-                reply = self.response(req,'cloud',code=-35,message=message)
-            self.emit(req['route'],reply)
+                try:
+                    with self.engine.lock:
+                        allowed = self.engine.ready and req['session']==self.engine.session
+                    if not allowed:raise NativeAudioError('Wait for the paired device session')
+                    result = self.store.request(checked_payload(req['data']),req['session'])
+                    reply = self.response(req,'cloud',result=result)
+                except Exception as error:
+                    message=str(error) if isinstance(error,NativeAudioError) else 'Native audio cache failed'
+                    reply = self.response(req,'cloud',code=-35,message=message)
+                self.emit(req['route'],reply)
+            finally:self.active.clear()
 
     def close(self):
         # Router teardown must not acknowledge a still-running speaker.
         self.jobs.put(None)
         self.thread.join(timeout=12)
         self.store.close()
+
+def reply_poll_ms(cloud):
+    # A reply produced just after submit must not wait through another idle
+    # 20 ms receive poll. Hundreds of sequential packets amplify that delay.
+    return 2 if cloud.active.is_set() or not cloud.jobs.empty() else 20

@@ -491,7 +491,7 @@ def serve(state_dir):
     engine = Engine(emit, lambda: default_backend(state_dir=state_dir))
     from muse_memory_worker import MemoryWorker
     memory = MemoryWorker(emit, response, engine=engine)
-    from muse_cloud_worker import CloudWorker
+    from muse_cloud_worker import CloudWorker,reply_poll_ms
     cloud = CloudWorker(emit,response,engine)
     stop = threading.Event()
     def terminate(*_):
@@ -501,7 +501,7 @@ def serve(state_dir):
     pushes = {}
     try:
         while not stop.is_set():
-            if server.readable(20):
+            if server.readable(reply_poll_ms(cloud)):
                 try:
                     frames = server.recv_multipart(2)
                     if len(frames) != 2:

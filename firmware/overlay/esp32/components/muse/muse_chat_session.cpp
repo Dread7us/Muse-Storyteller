@@ -152,7 +152,7 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE, CMD_NATIVE_MESSAGE_FIXTURE };
+                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE, CMD_NATIVE_MESSAGE_FIXTURE, CMD_NATIVE_RANGE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -2150,14 +2150,15 @@ static void native_file_cb(void *ctx,int status,const uint8_t *data,size_t len,b
     r->len+=take;if(take<len)r->overflow=true;
     if(end||status<0)r->done.store(true,std::memory_order_release);
 }
-static void native_file_start(uint32_t offset){
+static void native_file_start(uint32_t offset,const char *message=nullptr){
     if(s_turn.phase!=P_IDLE||s_native_active||s_nf_id||offset>1024*1024){printf("@native_file {\"error\":\"busy_or_bound\"}\n");return;}
     if(!muse_link_req_ready()){printf("@native_file {\"error\":\"link_not_ready\"}\n");return;}
     s_nf.len=0;s_nf.status=0;s_nf.overflow=false;s_nf.done=false;s_nf_cancelled=false;
     s_nf_offset=offset;char range[48];snprintf(range,sizeof(range),"bytes=%lu-%lu",(unsigned long)offset,(unsigned long)(offset+4095));
-    const char *headers[]={"Range",range,nullptr};
-    s_nf_id=muse_link_req_open("GET","/fs/raw/muse-storyteller-tests/blue-lantern-20261104.mp3",headers,true,native_file_cb,&s_nf);
-    s_nf_deadline=now_us()+15000000LL;
+    const char *headers[]={"Range",range,"Accept","audio/mpeg",nullptr};
+    char path[256];snprintf(path,sizeof(path),"/api/voice/tts-stream?message_id=%s",message?message:"");
+    s_nf_id=muse_link_req_open("GET",message?path:"/fs/raw/muse-storyteller-tests/blue-lantern-20261104.mp3",headers,true,native_file_cb,&s_nf);
+    s_nf_deadline=now_us()+60000000LL;
     if(!s_nf_id){printf("@native_file {\"error\":\"link_open\"}\n");fflush(stdout);return;}
 
 }
@@ -2446,11 +2447,12 @@ static void handle(const cmd_t &cmd)
     case CMD_NATIVE_FIXTURE:
         if(turn_start(++s_gen,false,false)){
             s_bench_reply=true;s_local_only=true;s_turn.phase=P_WAIT_REPLY;s_turn.chat_posted=true;s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();s_turn.nmsgs=1;s_turn.msgs[0]=msg_t{};
-            strlcpy(s_turn.native_job,cmd.text?cmd.text:"44aabbccddeeff0011223302",sizeof(s_turn.native_job));s_turn.native_voice=0;s_turn.native_speed=1;
+            strlcpy(s_turn.native_job,cmd.text?cmd.text:"44aabbccddeeff0011223302",sizeof(s_turn.native_job));s_turn.native_voice=cmd.gen==1?1:0;s_turn.native_speed=1;
             strlcpy(s_turn.msgs[0].id,"native-controls-test",sizeof(s_turn.msgs[0].id));
             emit(MUSE_HATCH_EV_HEARD,"Native Muse playback test");message_done(0,"Preparing the verified Muse audio sample.");
         }free(cmd.text);break;
     case CMD_NATIVE_FILE:native_file_start(cmd.gen);break;
+    case CMD_NATIVE_RANGE:native_file_start(cmd.gen,cmd.text);free(cmd.text);break;
     case CMD_NATIVE_PROBE:native_start();break;
     case CMD_CONNECT:
         if (s_turn.phase == P_IDLE) {
@@ -2917,6 +2919,15 @@ extern "C" bool muse_chat_native_probe(void){if(!s_cmds)return false;cmd_t c{CMD
 
 extern "C" bool muse_chat_native_file(uint32_t offset){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FILE,offset,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
 
+extern "C" bool muse_chat_native_range(const char *id,uint32_t offset){
+    if(!s_cmds||s_turn.phase!=P_IDLE||!id||!*id||strlen(id)>127||offset>1024*1024||muse_memory_recorder_active())return false;
+    for(const char *p=id;*p;p++)if(!isalnum((unsigned char)*p)&&*p!='-'&&*p!='_')return false;
+    muse_native_voice_status_t native;muse_native_voice_status(&native);if(native.active)return false;
+    muse_module_llm_status_t voice;muse_module_llm_status(&voice);if(voice.state!=MUSE_MODULE_LLM_READY)return false;
+    char *owned=strdup(id);if(!owned)return false;cmd_t c{CMD_NATIVE_RANGE,offset,owned};
+    if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(owned);return false;}return true;
+}
+
 extern "C" bool muse_chat_native_fixture(void){if(!s_cmds)return false;cmd_t c{CMD_NATIVE_FIXTURE,0,nullptr};return xQueueSend(s_cmds,&c,0)==pdTRUE;}
 
 extern "C" bool muse_chat_native_message_fixture(const char *id,const char *text){
@@ -2929,4 +2940,5 @@ extern "C" bool muse_chat_native_message_fixture(const char *id,const char *text
     if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(owned);return false;}return true;
 }
 
-extern "C" bool muse_chat_native_fixture_key(const char *key){if(!s_cmds||!key||strlen(key)!=24)return false;for(const char *p=key;*p;p++)if(!isxdigit((unsigned char)*p))return false;char *copy=strdup(key);if(!copy)return false;cmd_t c{CMD_NATIVE_FIXTURE,0,copy};if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(copy);return false;}return true;}
+extern "C" bool muse_chat_native_fixture_voice_key(const char *key,unsigned voice){if(!s_cmds||voice>1||!key||strlen(key)!=24||muse_memory_recorder_active())return false;for(const char *p=key;*p;p++)if(!isxdigit((unsigned char)*p))return false;char *copy=strdup(key);if(!copy)return false;cmd_t c{CMD_NATIVE_FIXTURE,voice,copy};if(xQueueSend(s_cmds,&c,0)!=pdTRUE){free(copy);return false;}return true;}
+extern "C" bool muse_chat_native_fixture_key(const char *key){return muse_chat_native_fixture_voice_key(key,0);}

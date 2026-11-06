@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esp_intr_alloc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -121,6 +122,16 @@ static void recover_uart_framing(void){
             if(i%16==15){uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));vTaskDelay(1);}
         }
     }
+    xSemaphoreGive(s_tx_mutex);
+}
+
+static void recover_ascii_framing(void){
+    // Active native downloads use only brace-safe JSON, never RAW. Close a
+    // partial two-level envelope without flooding the reverse link with the
+    // many error replies needed for legacy binary recovery at startup.
+    xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
+    uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n}}}\n",5);
+    uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));
     xSemaphoreGive(s_tx_mutex);
 }
 
@@ -602,7 +613,7 @@ static void runtime_task(void *unused)
             // Only the operation owner may reset framing. User capture/control
             // commands win, and no listening or playback can start concurrently.
             bool permitted=transfer_recovery_allowed(r.operation,uxQueueMessagesWaiting(s_commands)>0);
-            if(permitted){recover_uart_framing();ESP_LOGW(TAG,"recovering idle voice transfer");}
+            if(permitted){recover_ascii_framing();ESP_LOGW(TAG,"recovering idle voice transfer");}
             portENTER_CRITICAL(&s_lock);s_recovery_done=recovery;s_recovery_ok=permitted;portEXIT_CRITICAL(&s_lock);
         }
         portENTER_CRITICAL(&s_lock);
@@ -621,7 +632,8 @@ static void runtime_task(void *unused)
             if (!send_command(&r, "hello", NULL, 0)) fail(&r, "WAITING FOR VOICE MODULE...");
             r.retry_at = now + 15000000LL;
         }
-        if (ready && r.operation == OP_NONE && now >= r.next_status_at &&
+        muse_native_voice_status_t native;muse_native_voice_status(&native);
+        if (ready && !native.active && r.operation == OP_NONE && now >= r.next_status_at &&
             uxQueueMessagesWaiting(s_commands) == 0) {
             r.operation = OP_STATUS;
             r.generation = 0;
@@ -643,13 +655,18 @@ static void runtime_task(void *unused)
         command_t command;
         while (xQueueReceive(s_commands, &command, 0) == pdTRUE) handle(&r, &command);
         unsigned char bytes[512];
-        int n = uart_read_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
+        // Short acknowledgements must not wait 20 ms for a 512-byte read to
+        // fill. Retain the quieter idle wait when no audio work is active.
+        int n = uart_read_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM, bytes, sizeof(bytes),
+                               pdMS_TO_TICKS(native.active || r.operation==OP_SPEAK ? 2 : 20));
         portENTER_CRITICAL(&s_lock);memcpy(s_cloud_session,r.session,9);portEXIT_CRITICAL(&s_lock);
         if(n>0){portENTER_CRITICAL(&s_lock);s_diag_rx+=n;portEXIT_CRITICAL(&s_lock);}
         if (n > 0) muse_llm_framer_feed(&r.framer, bytes, (size_t)n, on_frame, &r);
         now = esp_timer_get_time();
         check_deadline(&r, now);
-        muse_memory_tick(r.session, ready && (r.operation == OP_NONE || (r.operation == OP_SPEAK && !r.speaking)) && uxQueueMessagesWaiting(s_commands) == 0);
+        // Native packet ACKs and user controls have priority over periodic
+        // meter/status and archive/usage traffic during the finite download.
+        muse_memory_tick(r.session, ready && !native.active && (r.operation == OP_NONE || (r.operation == OP_SPEAK && !r.speaking)) && uxQueueMessagesWaiting(s_commands) == 0);
     }
 }
 
@@ -682,8 +699,15 @@ esp_err_t muse_module_llm_start(void)
     err = uart_set_pin(CONFIG_MUSE_MODULE_LLM_UART_NUM, CONFIG_MUSE_MODULE_LLM_TX_GPIO,
         CONFIG_MUSE_MODULE_LLM_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) return err;
-    err = uart_driver_install(CONFIG_MUSE_MODULE_LLM_UART_NUM, 8192, 0, 0, NULL, 0);
+    err = uart_driver_install(CONFIG_MUSE_MODULE_LLM_UART_NUM, 8192, 0, 0, NULL,
+                              ESP_INTR_FLAG_LEVEL2);
     if (err != ESP_OK) return err;
+    // Drain well before the 128-byte FIFO fills. Keep the driver allocation
+    // policy unchanged so the encrypted network retains its DMA reserve.
+    err=uart_set_rx_full_threshold(CONFIG_MUSE_MODULE_LLM_UART_NUM,16);
+    if(err==ESP_OK)err=uart_set_rx_timeout(CONFIG_MUSE_MODULE_LLM_UART_NUM,2);
+    if(err!=ESP_OK){uart_driver_delete(CONFIG_MUSE_MODULE_LLM_UART_NUM);return err;}
+    ESP_LOGI(TAG,"UART RX threshold=16, timeout=2; priority-2 receive interrupt");
     s_commands = xQueueCreate(8, sizeof(command_t));
     if (!s_commands || xTaskCreate(runtime_task, "muse_local_uart", 6144, NULL, 4, NULL) != pdPASS) {
         if (s_commands) vQueueDelete(s_commands);

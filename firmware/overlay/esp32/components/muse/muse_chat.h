@@ -188,6 +188,8 @@ bool muse_chat_native_probe(void);
 extern "C" {
 #endif
 bool muse_chat_native_file(uint32_t offset);
+/* Read-only Range capability check on an existing Muse voice message. */
+bool muse_chat_native_range(const char *message_id,uint32_t offset);
 #ifdef __cplusplus
 }
 #endif
@@ -197,6 +199,7 @@ extern "C" {
 #endif
 bool muse_chat_native_fixture(void);
 bool muse_chat_native_fixture_key(const char *key);
+bool muse_chat_native_fixture_voice_key(const char *key,unsigned voice);
 /* Maintenance replay of an existing response; never posts a new chat message. */
 bool muse_chat_native_message_fixture(const char *message_id,const char *text);
 #ifdef __cplusplus

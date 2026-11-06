@@ -361,3 +361,60 @@ Settings and reader resizing passed on that saved clip. Cached Restart began in
 about 0.24 seconds in two observations. These are fixture observations, not network
 latency guarantees. No new Muse question or private conversation was submitted for
 this final fixture check.
+
+## Edition 0.3.7 transfer and replay recovery
+
+The reference stack played a previously failing 2,980-byte story through its last
+word. Its complete 1,602,624-byte MP3 decoded to roughly 200 seconds of speech;
+final hashes and playback completion were checked. The initial transfer still
+took minutes, so this was a completeness/recovery check, not a latency success.
+
+The native endpoint returned HTTP 200 with the whole body when asked for a later
+byte range. Accordingly, direct recovery re-reads and hashes the retained prefix
+locally, then uploads only the missing suffix to the Module. This is not a claim
+of HTTP range support. A physical partial-cache check uploaded only the remaining
+suffix and reached verified playback. Forced failed-job Restart checks retained
+an explicit failure instead of silently changing the selected voice.
+
+## Edition 0.3.8 Aria preparation checks
+
+The reference application compiled and passed application-slot digest and boot
+checks, retaining Aria, 60% volume and pairing. The network returned online with
+about 19–20 KiB of DMA-capable memory available. An experimental internal-RAM
+interrupt/stack configuration failed validation and was discarded; the installed
+build preserves the working allocation policy and network reserve.
+
+A fixed, already generated 58-second Aria clip was transferred into a cold Module
+cache. First speech improved from 40.2 seconds on the initial batching candidate
+to 24.8 seconds with prompt reply handling and the safer receive configuration.
+The latter transferred all 232,992 MP3 bytes with no recovery retries. Its
+preparation profile recorded 10 file requests, 157 checked packets, 12.8 seconds
+in UART writes and 2.9 seconds waiting for acknowledgements. These profile
+intervals are diagnostic observations, not throughput guarantees.
+
+Both copies had identical MP3/source hashes. All 1,863,936 decoded PCM bytes played
+in one block, with true local alignment retained for 161 words; the final reader
+offset was 899, the end of the script. This controlled replay excludes a new
+Muse response and new voice generation. It must not be compared directly to a
+fresh-question response time.
+
+A separate fresh 201-byte reply began speaking in 17.0 seconds and finished through
+its final word. An earlier observation of the same requested passage was 21.9
+seconds. Muse's text arrived sooner in the later run, so the difference cannot be
+attributed wholly to this firmware. Server generation, reply length and network
+conditions still affect first speech; complete buffering remains mandatory.
+
+A fresh longer public story began speaking in 35.8 seconds and finished through
+byte 815, its final word, with no voice error or transfer recovery.
+That fresh story used complete-audio timing estimates rather than true alignment;
+the fixed reference clip above retained true alignment.
+Pause/Resume, Stop, Sound access and reader resizing passed during cached playback. Restart
+from stopped began at the opening words in 0.67 seconds. Local Piper then spoke
+and completed a local setting confirmation; Aria and 60% volume were restored,
+and the reference device returned to Ready with advancing UI frames.
+
+The Linux source/runtime suite passed all 99 tests, including capacity-limited
+file callbacks, stale generations, acknowledgement fences, subprocess failure and
+active/idle reply polling. The Windows run passed 60 tests with 19 platform skips.
+The physical firmware build refers to the reference installation; the sanitized
+public weather/profile differences described above remain applicable.

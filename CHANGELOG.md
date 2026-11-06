@@ -1,5 +1,13 @@
 # Release history
 
+## 0.3.8
+
+- Batch prepared Helio/Aria audio into bounded 32 KiB network reads, while keeping the Module link's individually checked packets at 1536 bytes.
+- Avoid a redundant end-of-file request when the final audio size is already known.
+- Run optional word alignment in its own low-priority process, with bounded messages, timeouts and worker cleanup; retain complete-audio fallback if analysis fails.
+- Poll for replies promptly while voice preparation is active and drain the Core2 UART FIFO earlier, while preserving the encrypted network's memory reserve.
+- Add regression coverage for ranged batches, late callbacks, limits, worker failure and isolation from voice-control threads.
+
 ## 0.3.7
 
 - Fix Restart after a failed or cancelled direct download by binding healthy work to the new playback generation, or fetching the same existing response afresh when the old job failed.
@@ -9,6 +17,9 @@
 - Keep per-block integrity, duplicate checks, final-file hashing and decoder success mandatory before native playback.
 - Distinguish cache, connection, download, transfer and final-check failures on screen. Stop automatic retries on access refusal.
 - Add guarded existing-message replay for maintenance without posting a new chat question or adding duplicate archive entries.
+- Keep direct cache identity tied to the exact message and script; on a retry, verify the retained prefix and upload only missing audio to the Module.
+- Preserve the full prefix acknowledgement when resuming and split a packet at any retained-prefix boundary.
+- Give active voice preparation priority over periodic status, usage and archive requests; use a short JSON-only repair for interrupted native packets.
 
 ## 0.3.6
 

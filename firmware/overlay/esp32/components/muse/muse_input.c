@@ -808,12 +808,14 @@ static bool console_command(char *line, bool whole)
     if(!strcmp(line,"device.uart_recovery_test")){printf("@uart_recovery_test {\"queued\":%s}\n",muse_module_llm_test_framing_stall()?"true":"false");fflush(stdout);return true;}
     if(!strcmp(line,"device.cleartest")){muse_chat_clear_bench();return true;}
     if(!strncmp(line,"device.nativefixture=",21)){muse_chat_native_fixture_key(line+21);return true;}
+    if(!strncmp(line,"device.ariafixture=",19)){printf("@aria_fixture {\"queued\":%s}\n",muse_chat_native_fixture_voice_key(line+19,1)?"true":"false");fflush(stdout);return true;}
     if(!strcmp(line,"device.nativefixture")){printf("@native_fixture {\"queued\":%s}\n",muse_chat_native_fixture()?"true":"false");fflush(stdout);return true;}
     if(!strncmp(line,"device.voice_source=",20)){int value=-1,voice=-1;if(sscanf(line+20,"%d,%d",&value,&voice)==2 && value>=0 && value<=1 && voice>=0 && voice<=2){muse_settings_set_voice_source(value);muse_settings_set_muse_voice(voice);}printf("@voice_source {\"source\":%d,\"voice\":%d,\"volume\":%d}\n",muse_settings_voice_source(),muse_settings_muse_voice(),muse_settings_volume());fflush(stdout);return true;}
     if(!strncmp(line,"device.recognized=",18)){printf("@recognized_test {\"queued\":%s}\n",muse_chat_recognized_turn(line+18)?"true":"false");fflush(stdout);return true;}
     if(!strcmp(line,"device.playbacktest")){printf("@playback_test {\"queued\":%s}\n",muse_chat_bench_playback()?"true":"false");fflush(stdout);return true;}
     if(!strncmp(line,"device.command=",15)){printf("@device_command {\"queued\":%s}\n",muse_chat_device_command(line+15)?"true":"false");fflush(stdout);return true;}
     if(!strncmp(line,"device.nativefile=",18)){char *end=NULL;unsigned long n=strtoul(line+18,&end,10);if(end&&!*end&&n<=1024*1024)muse_chat_native_file((uint32_t)n);return true;}
+    if(!strncmp(line,"device.nativerange=",19)){char id[128]={0};unsigned offset=0;bool queued=sscanf(line+19,"%127[^,],%u",id,&offset)==2&&muse_chat_native_range(id,offset);printf("@native_range {\"queued\":%s}\n",queued?"true":"false");fflush(stdout);return true;}
     if (!strcmp(line,"device.nativeprobe")){printf("@native {\"queued\":%s}\n",muse_chat_native_probe()?"true":"false");fflush(stdout);return true;}
     if (!strcmp(line, "voice.status")) {
         muse_module_llm_status_t state;

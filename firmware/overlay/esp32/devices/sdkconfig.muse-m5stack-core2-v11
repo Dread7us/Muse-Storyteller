@@ -41,6 +41,7 @@ CONFIG_BSP_PMU_AXP2101=y
 # CONFIG_BSP_PMU_AXP192 is not set
 CONFIG_MUSE_HATCH=y
 CONFIG_MUSE_MODULE_LLM=y
+# CONFIG_UART_ISR_IN_IRAM is not set
 # Exact task configurations verified in the reference hardware report (2026-10-25).
 # The additive musevoice bridge validates these tasks; no full catalog is used.
 CONFIG_MUSE_MODULE_LLM_ASR_SERVICE="asr"

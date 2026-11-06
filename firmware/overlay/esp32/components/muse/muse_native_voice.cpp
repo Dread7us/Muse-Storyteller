@@ -36,29 +36,33 @@ static int64_t now(){return esp_timer_get_time();}
 static void pause_ms(int ms){vTaskDelay(pdMS_TO_TICKS(ms));}
 static bool stopped(){return cancelled.load();}
 
-struct FileReply {uint8_t data[4096];size_t length;int status;bool overflow,done;};
+static constexpr size_t FILE_BATCH=32768;
+struct FileReply {uint8_t data[FILE_BATCH];size_t length,limit;int status;bool overflow,done;};
 EXT_RAM_BSS_ATTR static FileReply file_reply;
+EXT_RAM_BSS_ATTR static uint8_t file_batch[FILE_BATCH+1];
+static unsigned file_requests;
 static uint32_t file_generation;
 static void file_cb(void *context,int status,const uint8_t *data,size_t length,bool end){
     portENTER_CRITICAL(&lock);
     if((uint32_t)(uintptr_t)context!=file_generation){portEXIT_CRITICAL(&lock);return;}
     if(status)file_reply.status=status;
     if(length && data){
-        if(length>sizeof(file_reply.data)-file_reply.length)file_reply.overflow=true;
+        if(length>file_reply.limit-file_reply.length)file_reply.overflow=true;
         else{memcpy(file_reply.data+file_reply.length,data,length);file_reply.length+=length;}
     }
     if(end||status<0)file_reply.done=true;
     portEXIT_CRITICAL(&lock);
 }
 static int read_file_once(const char *name,size_t offset,uint8_t *out,size_t cap,size_t &length){
-    length=0;if(stopped()||!muse_link_req_ready())return -1;
+    length=0;if(!cap||cap>FILE_BATCH||stopped()||!muse_link_req_ready())return -1;
     char path[180],range[64];
     snprintf(path,sizeof(path),"/fs/raw/muse-storyteller/replies/%s/%s",job,name);
     snprintf(range,sizeof(range),"bytes=%u-%u",(unsigned)offset,(unsigned)(offset+cap-1));
     const char *headers[]={"Range",range,nullptr};
-    portENTER_CRITICAL(&lock);file_reply={};uint32_t token=++file_generation;portEXIT_CRITICAL(&lock);
+    portENTER_CRITICAL(&lock);file_reply={};file_reply.limit=cap;uint32_t token=++file_generation;portEXIT_CRITICAL(&lock);
     int64_t id=muse_link_req_open("GET",path,headers,true,file_cb,(void *)(uintptr_t)token);
     if(!id)return -1;
+    file_requests++;
     int64_t until=now()+10000000;
     bool done=false;
     while(now()<until&&!stopped()){
@@ -102,8 +106,24 @@ static uint32_t rpc_serial;
 static int64_t profile_wire_us,profile_ack_us;
 static unsigned profile_packets;
 static unsigned direct_recoveries;
+static size_t direct_resume_bytes;
 static bool hex_digest(const uint8_t *data,size_t length,char out[65]);
+static bool native_message_key(const char *message,const char *text,char out[25]){
+    char source[65],identity[256],hash[65];
+    if(!hex_digest((const uint8_t *)text,strlen(text),source))return false;
+    int length=snprintf(identity,sizeof(identity),"muse-app-message-v1\n%s\n%s",message,source);
+    if(length<0||(size_t)length>=sizeof(identity)||!hex_digest((const uint8_t *)identity,(size_t)length,hash))return false;
+    memcpy(out,hash,24);out[24]=0;return true;
+}
+static bool digest_snapshot(const psa_hash_operation_t *source,char out[65]){
+    psa_hash_operation_t copy=PSA_HASH_OPERATION_INIT;uint8_t binary[32];size_t written=0;
+    bool okay=psa_hash_clone(source,&copy)==PSA_SUCCESS&&psa_hash_finish(&copy,binary,sizeof(binary),&written)==PSA_SUCCESS&&written==32;
+    psa_hash_abort(&copy);
+    if(okay)for(unsigned i=0;i<32;i++)snprintf(out+2*i,3,"%02x",binary[i]);
+    return okay;
+}
 bool muse_native_voice_reply(const cJSON *root,const char *session){
+    char reason[97]={0};int rejected=0;
     const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(root,"request_id"));
     const cJSON *data=cJSON_GetObjectItemCaseSensitive(root,"data");
     const char *owner=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(data,"session"));
@@ -115,6 +135,7 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
     if(rpc_waiting && !strcmp(id,rpc_id) && owner && !strcmp(owner,rpc_session) && !strcmp(owner,session)){
         rpc_ok=event&&!strcmp(event,"cloud")&&cJSON_IsNumber(code)&&code->valuedouble==0;
         rpc_error=cJSON_IsNumber(code)?code->valueint:-99;
+        if(rpc_error){const char *message=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error,"message"));if(message)strlcpy(reason,message,sizeof(reason));rejected=rpc_error;}
         const cJSON *result=cJSON_GetObjectItemCaseSensitive(data,"result");
         double received=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(result,"received"));
         if(received>=0 && received<=32*1024*1024 && received==(size_t)received)rpc_received=(size_t)received;
@@ -123,7 +144,9 @@ bool muse_native_voice_reply(const cJSON *root,const char *session){
         if(hash&&strlen(hash)==64)strlcpy(rpc_hash,hash,sizeof(rpc_hash));
         rpc_done=true;rpc_waiting=false;
     }
-    portEXIT_CRITICAL(&lock);return true;
+    portEXIT_CRITICAL(&lock);
+    if(rejected){for(char *p=reason;*p;p++)if((unsigned char)*p<32)*p=' ';printf("@native_rpc_error code=%d reason=%s\n",rejected,reason);fflush(stdout);}
+    return true;
 }
 static bool rpc_once(cJSON *data,bool cleanup){
     portENTER_CRITICAL(&lock);rpc_error=-90;portEXIT_CRITICAL(&lock);
@@ -207,13 +230,26 @@ static bool rpc_raw_once(cJSON *data){
     if(okay)okay=rpc_raw_body(key,raw,decoded,(size_t)offset,hash);
     free(raw);cJSON_Delete(data);return okay;
 }
+static bool native_block_ack_valid(size_t received,size_t expected,size_t prefix){
+    // An identical block replayed inside a verified existing prefix returns
+    // the receiver's full prefix length, not the end of this older block.
+    return received==expected||(expected<=prefix&&received==prefix);
+}
+static size_t native_block_length(size_t available,size_t capacity,size_t offset,size_t prefix,bool finished){
+    size_t count=available>capacity?capacity:available;
+    if(count<capacity&&!finished)return 0;
+    // A retained prefix can end between packet boundaries after a build or
+    // interrupted final frame. Verify its tail before appending new bytes.
+    if(offset<prefix&&count>prefix-offset)count=prefix-offset;
+    return count;
+}
 static bool rpc_binary_block(const uint8_t *raw,size_t bytes,size_t offset){
     char hash[65];
     if(!raw||!bytes||bytes>8192||offset+bytes>32*1024*1024||!hex_digest(raw,bytes,hash))return false;
     for(unsigned attempt=0;attempt<3&&!stopped();attempt++){
         if(rpc_raw_body(job,raw,bytes,offset,hash)){
             portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
-            if(acknowledged==offset+bytes)return true;
+            if(native_block_ack_valid(acknowledged,offset+bytes,direct_resume_bytes))return true;
         }
         portENTER_CRITICAL(&lock);int code=rpc_error;size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
         printf("@native_rpc {\"op\":\"chunk\",\"attempt\":%u,\"code\":%d,\"received\":%u,\"expected\":%u}\n",attempt+1,code,(unsigned)acknowledged,(unsigned)(offset+bytes));fflush(stdout);
@@ -254,7 +290,8 @@ static bool hex_digest(const uint8_t *data,size_t length,char out[65]){
 }
 static bool transfer_once(unsigned &stage,bool &retryable){
     bool ready=false,complete=false;
-    uint8_t block[4097];size_t count=0,offset=0;stage=0;retryable=true;
+    // One worker owns the PSRAM batch. Keep large data off its task stack.
+    auto &block=file_batch;size_t count=0,offset=0;stage=0;retryable=true;
     char expected_source[65]={},expected_audio[65]={};
     size_t source_bytes=0,audio_bytes=0;
     int64_t until=now()+720000000;
@@ -314,17 +351,14 @@ static bool transfer_once(unsigned &stage,bool &retryable){
         offset=resume;buffered(offset,audio_bytes);phase(2);
     }
     until=now()+1200000000;
-    char encoded[5500];
     while(ready&&!stopped()&&now()<until){stage=3;
-        int status=read_file("audio.mp3",offset,block,4096,count);
+        if(audio_bytes&&offset>=audio_bytes){complete=offset==audio_bytes;ready=complete;break;}
+        size_t wanted=FILE_BATCH;if(audio_bytes&&audio_bytes-offset<wanted)wanted=audio_bytes-offset;
+        int status=read_file("audio.mp3",offset,block,wanted,count);
         if(status==200||status==206){
             if(!count||offset+count>32*1024*1024){ready=false;break;}
-            size_t sent=0;while(sent<count){size_t portion=count-sent>4096?4096:count-sent;
-            size_t written=0;if(mbedtls_base64_encode((uint8_t *)encoded,sizeof(encoded)-1,&written,block+sent,portion)){ready=false;break;}encoded[written]=0;
-            cJSON *d=operation("chunk");cJSON_AddNumberToObject(d,"offset",offset+sent);cJSON_AddStringToObject(d,"audio",encoded);
-            char chunk_hash[65];if(!hex_digest(block+sent,portion,chunk_hash)){cJSON_Delete(d);ready=false;break;}
-            cJSON_AddNumberToObject(d,"bytes",portion);cJSON_AddStringToObject(d,"sha256",chunk_hash);
-            if(!rpc(d)){ready=false;break;}
+            size_t sent=0;while(sent<count){size_t portion=count-sent>1536?1536:count-sent;
+            if(!rpc_binary_block(block+sent,portion,offset+sent)){ready=false;break;}
             portENTER_CRITICAL(&lock);size_t acknowledged=rpc_received;portEXIT_CRITICAL(&lock);
             if(acknowledged!=offset+sent+portion){ready=false;break;}sent+=portion;
             }if(!ready)break;
@@ -359,6 +393,7 @@ static bool transfer_once(unsigned &stage,bool &retryable){
     return ready;
 }
 static void worker(void *){
+    file_requests=0;profile_wire_us=profile_ack_us=0;profile_packets=0;
     unsigned stage=0;bool retryable=true,ready=false;
     const int64_t recovery_deadline=now()+360000000;
     for(unsigned attempt=0;attempt<3&&!stopped();attempt++){
@@ -383,6 +418,7 @@ static void worker(void *){
         if(ready||!retryable)break;
     }
     if(!ready){phase(stopped()?6:5,stopped()?9:stage+1);if(!stopped())state.store(-1);}
+    printf("@native_batch {\"ok\":%s,\"file_requests\":%u,\"packets\":%u,\"wire_ms\":%u,\"ack_ms\":%u,\"elapsed_ms\":%u}\n",ready?"true":"false",file_requests,profile_packets,(unsigned)(profile_wire_us/1000),(unsigned)(profile_ack_us/1000),(unsigned)((now()-started_us)/1000));fflush(stdout);
     running.store(false);vTaskDeleteWithCaps(nullptr);
 }
 
@@ -394,7 +430,10 @@ static void worker(void *){
 static constexpr size_t DIRECT_CAP=256*1024;
 EXT_RAM_BSS_ATTR static uint8_t direct_ring[DIRECT_CAP];
 // The single job owner reuses this bounded PSRAM block, outside its task stack.
-EXT_RAM_BSS_ATTR static uint8_t direct_block[4096];
+// A complete base64 request must fit comfortably below the Module's 4096-byte
+// Linux TTY queue even if its reader is briefly descheduled. Wait for each
+// checked acknowledgement before sending another packet.
+EXT_RAM_BSS_ATTR static uint8_t direct_block[1536];
 static size_t direct_read,direct_write,direct_used;
 static int direct_status;
 static bool direct_done,direct_failed;
@@ -441,10 +480,14 @@ static bool direct_transfer(bool legacy){
         portENTER_CRITICAL(&lock);int error=rpc_error;portEXIT_CRITICAL(&lock);
         printf("@native_direct {\"event\":\"cache_begin_failed\",\"code\":%d}\n",error);fflush(stdout);return false;
     }
-    portENTER_CRITICAL(&lock);bool cached=rpc_complete;size_t cached_bytes=rpc_received;portEXIT_CRITICAL(&lock);
+    char prefix_hash[65];
+    portENTER_CRITICAL(&lock);bool cached=rpc_complete;size_t cached_bytes=rpc_received;strlcpy(prefix_hash,rpc_hash,sizeof(prefix_hash));portEXIT_CRITICAL(&lock);
+    direct_resume_bytes=cached_bytes;
     if(cached&&cached_bytes>=128){direct_failure.store(0);buffered(cached_bytes,cached_bytes);phase(4);state.store(1);return true;}
-    // A retry re-downloads the immutable message and verifies already admitted
-    // blocks too. The receiver accepts identical duplicates, never replacements.
+    if(cached_bytes&&strlen(prefix_hash)!=64)return false;
+    // The native endpoint may ignore Range. Re-read its prefix over the fast
+    // encrypted link, verify it locally, then upload only the missing suffix.
+    // Never join a different audio response onto a retained partial file.
     portENTER_CRITICAL(&lock);
     direct_read=direct_write=direct_used=direct_max_frame=0;direct_status=0;direct_done=direct_failed=false;uint32_t token=++direct_token;
     portEXIT_CRITICAL(&lock);
@@ -457,20 +500,33 @@ static bool direct_transfer(bool legacy){
     bool okay=psa_hash_setup(&digest,PSA_ALG_SHA_256)==PSA_SUCCESS,finished=false;
     auto &block=direct_block;size_t offset=0;int status=0;
     int64_t deadline=now()+360000000,first=0;
-    phase(2);buffered(0,0);
+    phase(cached_bytes?7:2);buffered(cached_bytes,0);
     while(okay&&!stopped()&&now()<deadline){
         size_t count=0;bool failed=false;
         portENTER_CRITICAL(&lock);
         status=direct_status;finished=direct_done;failed=direct_failed;
-        count=direct_used>sizeof(block)?sizeof(block):direct_used;
-        // Coalesce typical small network frames into full UART blocks.
-        if(count<sizeof(block)&&!finished)count=0;
+        count=native_block_length(direct_used,sizeof(block),offset,cached_bytes,finished);
         if(count){size_t a=count>DIRECT_CAP-direct_read?DIRECT_CAP-direct_read:count;memcpy(block,direct_ring+direct_read,a);if(count>a)memcpy(block+a,direct_ring,count-a);direct_read=(direct_read+count)%DIRECT_CAP;direct_used-=count;}
         portEXIT_CRITICAL(&lock);
         if(failed||(status&&!(status>=200&&status<300))){okay=false;break;}
         if(count){
             if(!first){first=now();printf("@native_direct {\"event\":\"first_audio\",\"ms\":%u}\n",(unsigned)((first-started_us)/1000));fflush(stdout);}
             if(offset+count>32*1024*1024||psa_hash_update(&digest,block,count)!=PSA_SUCCESS){direct_failure.store(24);okay=false;break;}
+            if(offset<cached_bytes){
+                offset+=count;
+                if(offset==cached_bytes){
+                    char actual[65];
+                    if(!digest_snapshot(&digest,actual)||strcmp(actual,prefix_hash)){
+                        // Existing end validation invalidates this changed prefix;
+                        // the bounded next attempt must start clean, not mix files.
+                        if(digest_snapshot(&digest,actual)){cJSON *invalid=operation("end");cJSON_AddNumberToObject(invalid,"bytes",cached_bytes);cJSON_AddStringToObject(invalid,"sha256",actual);rpc_once(invalid,true);}
+                        printf("@native_direct {\"event\":\"prefix_changed\",\"bytes\":%u}\n",(unsigned)cached_bytes);fflush(stdout);
+                        direct_failure.store(24);okay=false;break;
+                    }
+                    printf("@native_direct {\"event\":\"prefix_verified\",\"bytes\":%u,\"uploaded_again\":0}\n",(unsigned)cached_bytes);fflush(stdout);phase(2);
+                }
+                continue;
+            }
             if(!rpc_binary_block(block,count,offset)){direct_failure.store(23);okay=false;break;}
             offset+=count;buffered(offset,0);
         }else if(finished)break;
@@ -509,8 +565,10 @@ static void direct_worker(void *){
 bool muse_native_voice_begin_message(const char *message,const char *text,uint32_t gen){
     if(!message||!*message||strlen(message)>=sizeof(direct_message)||!text||!*text||strlen(text)>=sizeof(script))return false;
     bool expected=false;if(!running.compare_exchange_strong(expected,true))return false;
-    generation=gen;direct_recoveries=0;direct_failure.store(0);strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
-    for(unsigned i=0;i<3;i++)snprintf(job+8*i,9,"%08lx",(unsigned long)esp_random());
+    generation=gen;direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);strlcpy(direct_message,message,sizeof(direct_message));strlcpy(script,text,sizeof(script));
+    // Identity follows the immutable message and exact script, so Restart and
+    // later boots can reuse its checked partial or complete local cache.
+    if(!native_message_key(message,text,job)){running.store(false);return false;}
     cancelled.store(false);state.store(0);
     portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,job,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
     if(xTaskCreatePinnedToCoreWithCaps(direct_worker,"muse_direct",16384,nullptr,3,nullptr,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){running.store(false);state.store(-1);return false;}return true;
@@ -518,7 +576,7 @@ bool muse_native_voice_begin_message(const char *message,const char *text,uint32
 bool muse_native_voice_begin(const char *key,uint32_t gen,int voice,int speed){
     bool expected=false;if(!key||strlen(key)!=24||!running.compare_exchange_strong(expected,true))return false;
     for(const char *p=key;*p;p++)if(!((*p>='0'&&*p<='9')||(*p>='a'&&*p<='f'))){running.store(false);return false;}
-    generation=gen;direct_recoveries=0;direct_failure.store(0);selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
+    generation=gen;direct_recoveries=0;direct_resume_bytes=0;direct_failure.store(0);selected_voice=voice==1?1:0;selected_speed=speed>=0&&speed<=2?speed:1;strlcpy(job,key,sizeof(job));script[0]=0;cancelled.store(false);state.store(0);
     portENTER_CRITICAL(&lock);progress={};progress.phase=1;strlcpy(progress.job,key,sizeof(progress.job));started_us=now();answer_ready_us=0;portEXIT_CRITICAL(&lock);
     if(xTaskCreatePinnedToCoreWithCaps(worker,"muse_native",16384,nullptr,3,nullptr,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){running.store(false);state.store(-1);return false;}return true;
 }

@@ -23,7 +23,7 @@ class Item:
   if not self.file.closed:self.file.close()
  def size(self):return self.pcm.stat().st_size if self.pcm.exists() else 0
 
-class Aligner:
+class LocalAligner:
  def __init__(self):
   # UART routing and playback controls must win over optional word analysis
   # on the Module's two CPU cores. Native model threads inherit this priority.
@@ -56,6 +56,13 @@ class Aligner:
    if pos<0:raise NativeAudioError('Timing text does not match its script')
    cursor=pos+len(word);output.append((float(times[a]),float(times[b]),pos,cursor))
   return output
+
+class Aligner:
+ def __init__(self):
+  from muse_alignment_worker import AlignmentWorker
+  self.worker=AlignmentWorker()
+ def align(self,pcm,text):return self.worker.align(pcm,text)
+ def close(self):self.worker.close()
 
 class Store:
  def __init__(self,root=CACHE):
@@ -274,6 +281,7 @@ class Store:
     future=getattr(item,'timing_future',None)
     if future:future.cancel()
   self.pool.shutdown(wait=False)
+  if self.aligner is not None and hasattr(self.aligner,'close'):self.aligner.close()
  def play(self,backend,key,text,volume,cancel,on_play):
   from muse_voice_backend import check_cancel
   with self.lock:
