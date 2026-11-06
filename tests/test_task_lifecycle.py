@@ -121,7 +121,7 @@ class TaskLifecycle(unittest.TestCase):
         result=subprocess.run([cls.compiler,'-std=c++17','-O0',str(source),'-o',str(cls.exe)],capture_output=True,text=True)
         if result.returncode:raise RuntimeError(result.stderr)
     def run_case(self,name):subprocess.run([str(self.exe),name],check=True,capture_output=True,text=True)
-    def test_restart_resumes_the_section_producer_as_well_as_audio(self):self.case('section_restart')
+    def test_restart_resumes_the_section_producer_as_well_as_audio(self):self.run_case('section_restart')
     def test_work_survives_more_than_twenty_seconds_after_ack(self):self.run_case('busy_gap')
     def test_idle_activity_cannot_finish_running_task(self):self.run_case('idle_activity')
     def test_child_task_completion_preserves_root(self):self.run_case('children')
