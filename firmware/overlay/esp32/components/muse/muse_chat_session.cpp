@@ -1585,23 +1585,28 @@ static const char *msg_id(cJSON *payload, cJSON *event)
     return id && id[0] ? id : nullptr;
 }
 
+// Persisted messages use chat_event_seq; live deltas/status use the bus sequence.
+// A saved final reply can therefore have a LOWER seq than the last live update.
+// Authoritative full messages are deduplicated by ID and final text in message_done,
+// where a revised final with the same ID remains eligible for delivery.
+static bool accept_event_sequence(const char *event,int64_t value){
+    if(!strcmp(event,"message.assistant")||!strcmp(event,"message.user"))return true;
+    if(value>0&&value<=s_last_seq)return false;
+    if(value>s_last_seq)s_last_seq=value;
+    return true;
+}
+
 static void on_event(cJSON *line)
 {
     if (strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(line, "type")) ?: "", "event") != 0) {
         return;   /* the subscription ack */
     }
+    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
     cJSON *seq = cJSON_GetObjectItem(line, "seq");
-    if (cJSON_IsNumber(seq)) {
-        int64_t v = (int64_t)seq->valuedouble;
-        if (v > 0 && v <= s_last_seq) {
-            return;
-        }
-        s_last_seq = v > s_last_seq ? v : s_last_seq;
-    }
+    if(cJSON_IsNumber(seq)&&!accept_event_sequence(event,(int64_t)seq->valuedouble))return;
     if (s_turn.phase != P_WAIT_REPLY) {
         return;
     }
-    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
     cJSON *payload = cJSON_GetObjectItem(line, "payload");
 
     if (!strcmp(event,"agent.status")||!strcmp(event,"task.status")) {

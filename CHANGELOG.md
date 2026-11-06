@@ -2,6 +2,7 @@
 
 ## 0.3.5
 
+- Fix lost tool-task confirmations: persisted message sequences and live-update sequences use different counters; a valid saved final reply must not be discarded as an old live event.
 - Keep long-running Muse tasks open after short progress acknowledgements, until their work finishes or an explicit overall deadline is reached.
 - Track running subtasks; unrelated completion events and idle activity cannot prematurely finish them.
 - Accept revised final messages and structured transcripts, refreshing stale audio while preserving an active acknowledgement's playback.

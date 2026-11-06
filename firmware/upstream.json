@@ -36,7 +36,7 @@
     },
     "esp32/components/muse/muse_chat_session.cpp": {
       "base_sha256": "b14e33c6277fd28c583f61a2676d1c97280af1e17f78ad9df3441f266332265b",
-      "overlay_sha256": "85e2f859aa64b9a6397434a3a69a79d206e796ef2ebb552f084dc5aae30ffaf9"
+      "overlay_sha256": "284842ce6649f6328c83a713f6cf24a28d98130fd78112e8662acf1b5823c91b"
     },
     "esp32/components/muse/muse_conversation.c": {
       "base_sha256": null,
