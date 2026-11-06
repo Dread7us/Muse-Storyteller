@@ -136,10 +136,8 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 #define REPLY_TIMEOUT_US (60 * 1000000LL)  /* chat posted -> first assistant message */
 #define TURN_CAP_US (180 * 1000000LL)
 #define SETTLE_US (3 * 1000000LL)          /* quiet period that ends a turn */
-#define BUSY_HOLD_US (20 * 1000000LL)      /* how long a busy agent keeps it open */
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
 #define TEXT_TURN_CAP_US (15 * 60 * 1000000LL)
-#define TEXT_BUSY_HOLD_US (5 * 60 * 1000000LL)
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
@@ -247,6 +245,36 @@ struct resampler_t {
     int16_t prev;
 };
 
+/* Reply work tracking: a short acknowledgement does not finish a task. */
+struct task_progress_t {
+    char running[8][80]; unsigned count;
+    bool activity_busy,finished,failed,overflow;
+};
+static bool task_progress_busy(const task_progress_t &p){return p.activity_busy||p.count||p.overflow;}
+static bool task_progress_update(task_progress_t &p,bool task,const char *id,const char *status,const char *activity,bool linked){
+    bool terminal=status&&(!strcmp(status,"completed")||!strcmp(status,"failed")||!strcmp(status,"errored")||!strcmp(status,"cancelled")||!strcmp(status,"canceled"));
+    if(task&&status){
+        unsigned found=p.count;
+        for(unsigned i=0;id&&i<p.count;i++)if(!strcmp(id,p.running[i])){found=i;break;}
+        if(terminal){
+            // An unrelated/replayed completion cannot finish the current work.
+            if(found==p.count&&!linked)return false;
+            if(found<p.count){p.count--;memmove(p.running[found],p.running[found+1],(p.count-found)*sizeof(p.running[0]));}
+            if(!p.count&&!p.overflow){p.finished=true;p.failed=strcmp(status,"completed")!=0;p.activity_busy=false;}
+        }else if(status[0]&&strcmp(status,"idle")){
+            if(id&&id[0]&&found==p.count){
+                if(p.count==8||strlen(id)>=sizeof(p.running[0]))p.overflow=true;
+                else{memcpy(p.running[p.count++],id,strlen(id)+1);}
+            }
+            p.activity_busy=true;p.finished=p.failed=false;
+        }
+    }
+    if(!task&&!activity&&status)activity=status;
+    if(activity&&!(task&&terminal))p.activity_busy=activity[0]&&strcmp(activity,"online")&&strcmp(activity,"idle")&&strcmp(activity,"completed")&&strcmp(activity,"failed")&&strcmp(activity,"errored")&&strcmp(activity,"cancelled")&&strcmp(activity,"canceled");
+    return true;
+}
+/* End reply work tracking. */
+
 struct turn_t {
     phase_t phase;
     uint32_t gen;
@@ -276,6 +304,7 @@ struct turn_t {
     msg_t msgs[MAX_MSGS];
     int nmsgs;
     bool agent_busy;
+    task_progress_t task_progress;
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
@@ -1000,8 +1029,12 @@ static void turn_reset_streams(void)
     }
 }
 
+EXT_RAM_BSS_ATTR static char s_pending_reply[TEXT_MAX];
+static int s_pending_reply_msg=-1;
+
 static void turn_finish(void)
 {
+    s_pending_reply_msg=-1;s_pending_reply[0]=0;
     s_playback_active=false;
 #if CONFIG_MUSE_MODULE_LLM
     muse_module_llm_cancel(s_turn.gen);
@@ -1456,11 +1489,51 @@ static void show_reply_start(const msg_t &m)
     }
 }
 
+// Muse may deliver a structured final transcript after a short acknowledgement.
+static const char *reply_final_text(cJSON *payload,const char *id,char *buffer,size_t capacity){
+    const char *text=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"display_text"));
+    if(text)return text;
+    cJSON *transcript=cJSON_GetObjectItem(payload,"transcript");
+    text=cJSON_GetStringValue(transcript);if(text)return text;
+    cJSON *messages=cJSON_GetObjectItem(transcript,"messages"),*chosen=nullptr;
+    if(cJSON_IsArray(messages))for(int i=0;i<cJSON_GetArraySize(messages);i++){
+        cJSON *m=cJSON_GetArrayItem(messages,i);
+        const char *role=cJSON_GetStringValue(cJSON_GetObjectItem(m,"role"));
+        const char *mid=cJSON_GetStringValue(cJSON_GetObjectItem(m,"id"));
+        if(role&&!strcmp(role,"assistant")&&mid&&id&&!strcmp(mid,id))chosen=m;
+    }
+    cJSON *content=cJSON_GetObjectItem(chosen?chosen:payload,"content");
+    text=cJSON_GetStringValue(content);if(text)return text;
+    if(!cJSON_IsArray(content))return nullptr;
+    size_t used=0;buffer[0]=0;
+    for(int i=0;i<cJSON_GetArraySize(content);i++){
+        cJSON *item=cJSON_GetArrayItem(content,i);
+        const char *type=cJSON_GetStringValue(cJSON_GetObjectItem(item,"type"));
+        const char *part=cJSON_GetStringValue(cJSON_GetObjectItem(item,"text"));
+        if(!type||strcmp(type,"text")||!part)continue;
+        size_t n=strlen(part),separator=used?1:0;
+        if(n+separator>=capacity-used){turn_fail("REPLY TEXT EXCEEDS DEVICE LIMIT");return nullptr;}
+        if(separator){buffer[used++]='\n';}
+        memcpy(buffer+used,part,n+1);used+=n;
+    }
+    return used?buffer:nullptr;
+}
+EXT_RAM_BSS_ATTR static char s_final_reply[TEXT_MAX];
+
 static void message_done(int i, const char *final_text)
 {
     msg_t &m = s_turn.msgs[i];
-    if (m.done) {
-        return;
+    if(m.done){
+        const char *previous=s_turn.texts?s_turn.texts+i*TEXT_MAX:nullptr;
+        if(!final_text||!final_text[0]||!previous||!strcmp(previous,final_text))return;
+        if(strlen(final_text)>=TEXT_MAX){turn_fail("REPLY TEXT EXCEEDS DEVICE LIMIT");return;}
+        if(m.tts==TTS_ACTIVE&&s_turn.tts_msg==i){
+            strlcpy(s_pending_reply,final_text,sizeof(s_pending_reply));s_pending_reply_msg=i;return;
+        }
+        // An authoritative revision gets a fresh audio cache. A duplicate does
+        // not replay; an active short acknowledgement is allowed to finish.
+        if(s_turn.native_started){muse_native_voice_cancel();s_turn.native_started=false;}
+        m.done=false;m.tts=TTS_NONE;m.external_key[0]=0;m.conversation_id=0;
     }
     m.done = true;
     mark(M_DONE);
@@ -1531,21 +1604,26 @@ static void on_event(cJSON *line)
     const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
     cJSON *payload = cJSON_GetObjectItem(line, "payload");
 
-    if (!strcmp(event, "agent.status") || !strcmp(event, "task.status")) {
-        const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
-        const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "status"));
-        bool was = s_turn.agent_busy;
-        if (code) {
-            s_turn.agent_busy = code[0] && strcmp(code, "online") && strcmp(code, "idle");
-        } else if (status) {
-            s_turn.agent_busy = status[0] && strcmp(status, "completed") && strcmp(status, "failed");
-        }
-        if (s_turn.text && s_turn.agent_busy != was) {
-            muse_hatch_console("busy", nullptr, "\"on\":%s", s_turn.agent_busy ? "true" : "false");
+    if (!strcmp(event,"agent.status")||!strcmp(event,"task.status")) {
+        const char *parent=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"reply_to_message_id"));
+        if(!parent)parent=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"parent_message_id"));
+        bool linked=parent&&parent[0]&&(is_user_id(parent)||find_msg(parent)>=0);
+        if(parent&&parent[0]&&!linked)return;
+        const char *message=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"message_id"));
+        linked=linked||(message&&(is_user_id(message)||find_msg(message)>=0));
+        const char *id=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"task_id"));
+        const char *status=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"status"));
+        const char *activity=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"activity_code"));
+        bool was=s_turn.agent_busy;
+        if(!task_progress_update(s_turn.task_progress,!strcmp(event,"task.status"),id,status,activity,linked))return;
+        s_turn.agent_busy=task_progress_busy(s_turn.task_progress);
+        if(was!=s_turn.agent_busy){
+            printf("@chat_work {\"busy\":%s,\"running\":%u,\"finished\":%s,\"failed\":%s}\n",s_turn.agent_busy?"true":"false",s_turn.task_progress.count,s_turn.task_progress.finished?"true":"false",s_turn.task_progress.failed?"true":"false");fflush(stdout);
+            if(s_turn.text)muse_hatch_console("busy",nullptr,"\"on\":%s",s_turn.agent_busy?"true":"false");
+            else if(s_turn.agent_busy&&s_turn.tts_msg<0){emit(MUSE_HATCH_EV_SENT,nullptr);muse_state_set_caption("Muse is working...");}
         }
         if(s_turn.native_job[0])muse_native_voice_answer_ready(s_turn.gen,s_turn.agent_busy);
-        s_turn.last_event_us = now_us();
-        return;
+        s_turn.last_event_us=now_us();return;
     }
     bool start = !strcmp(event, "delta.message_start");
     bool append = !strcmp(event, "delta.text_append");
@@ -1561,7 +1639,7 @@ static void on_event(cJSON *line)
     }
     s_turn.last_event_us = s_turn.last_content_us = now_us();
     msg_t &m = s_turn.msgs[i];
-    if (append) {
+    if (append && !m.done) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "text"));
         if (text && text[0] && s_turn.text) {
             mark(M_TEXT);
@@ -1573,10 +1651,8 @@ static void on_event(cJSON *line)
             show_reply_start(m);   /* ignored once the speech starts */
         }
     } else if (done || full) {
-        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text"));
-        if (!text) {
-            text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "content"));
-        }
+        const char *text=reply_final_text(payload,id,s_final_reply,sizeof(s_final_reply));
+        if(s_turn.phase!=P_WAIT_REPLY)return;
         cJSON *ready = cJSON_GetObjectItem(payload, "display_text_ready");
         if (done || !cJSON_IsFalse(ready)) {
             message_done(i, text);
@@ -1627,6 +1703,9 @@ static void start_tts(void)
                 turn_fail("REPLY TOO LONG FOR LOCAL VOICE");
                 return;
             }
+            // Ask for native speech after task work completes, so a progress
+            // acknowledgement cannot become the cached audio for the final result.
+            if(s_turn.native_direct&&(s_turn.agent_busy||(s_turn.task_progress.finished&&now_us()-s_turn.last_event_us<SETTLE_US)))return;
             if(s_turn.native_direct && !m.external_key[0]){
                 if(!s_turn.native_started){
                     s_turn.native_started=muse_native_voice_begin_message(m.id,local_text,s_turn.gen);
@@ -1789,7 +1868,9 @@ static void decode(void)
         msg_t &local = s_turn.msgs[s_turn.tts_msg];
         local.pcm_frames = s_turn.pcm_out - local.pcm_start;
         local.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
+        int completed=s_turn.tts_msg;s_turn.tts_msg=-1;
+        if(s_pending_reply_msg==completed){s_pending_reply_msg=-1;message_done(completed,s_pending_reply);s_pending_reply[0]=0;}
+        if(s_turn.agent_busy){emit(MUSE_HATCH_EV_SENT,nullptr);muse_state_set_caption("Muse is still working...");}
         return;
     }
     if (playback == MUSE_MODULE_LLM_PLAYBACK_CANCELLED) {
@@ -1883,6 +1964,7 @@ static void check_turn(void)
     int64_t turn_cap = text ? TEXT_TURN_CAP_US : TURN_CAP_US;
 #endif
     if (t - s_turn.start_us - s_turn.playback_paused_us > turn_cap) {
+        if(s_turn.agent_busy){turn_fail("MUSE TASK TIMED OUT");return;}
         ESP_LOGW(TAG, "turn hit the time cap");
         /* A voice turn that waited out the cap on a busy agent got no reply at all. */
         if (!text && !s_turn.nmsgs) {
@@ -1907,9 +1989,10 @@ static void check_turn(void)
     if (t - s_turn.last_event_us < SETTLE_US) {
         return;
     }
-    if (s_turn.agent_busy && t - s_turn.last_content_us < (text ? TEXT_BUSY_HOLD_US : BUSY_HOLD_US)) {
-        return;
-    }
+    // Working survives quiet gaps between an acknowledgement and the result.
+    // Only an idle/terminal status or the explicit overall deadline ends it.
+    if(s_turn.agent_busy)return;
+    if(s_turn.task_progress.failed){turn_fail("MUSE TASK FAILED - CHECK CHAT");return;}
     ESP_LOGI(TAG, "turn done: %d message(s) in %.1fs", s_turn.nmsgs, (t - s_turn.start_us) / 1e6);
     log_marks();
     turn_done(true);

@@ -135,6 +135,9 @@ static void local_voice_task(void *unused)
                 turn_active = true;
                 muse_state_set_mode(MUSE_MODE_THINKING);
                 muse_state_set_caption("%s", text);
+            } else if (event == MUSE_HATCH_EV_SENT) {
+                turn_active=true;
+                if(status.state!=MUSE_MODULE_LLM_SPEAKING){reply=false;muse_state_set_mode(MUSE_MODE_THINKING);muse_state_set_caption("Muse is working...");}
             } else if (event == MUSE_HATCH_EV_REPLY) {
                 reply = true;
                 muse_state_set_mode(muse_settings_speaker_on() ? (status.state==MUSE_MODULE_LLM_SPEAKING ? MUSE_MODE_SPEAKING : MUSE_MODE_THINKING) : MUSE_MODE_IDLE);

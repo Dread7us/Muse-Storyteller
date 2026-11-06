@@ -1,5 +1,13 @@
 # Release history
 
+## 0.3.5
+
+- Keep long-running Muse tasks open after short progress acknowledgements, until their work finishes or an explicit overall deadline is reached.
+- Track running subtasks; unrelated completion events and idle activity cannot prematurely finish them.
+- Accept revised final messages and structured transcripts, refreshing stale audio while preserving an active acknowledgement's playback.
+- Prepare native narration after task completion, allowing final text to settle before fetching its audio.
+- Keep working feedback visible between responses; report task failure and timeout explicitly.
+
 ## 0.3.4
 
 - Wait for the vendor's audio handlers during cold startup, then complete the real microphone/decoder warm-up before Ready. Runtime stop retries remain short and bounded.

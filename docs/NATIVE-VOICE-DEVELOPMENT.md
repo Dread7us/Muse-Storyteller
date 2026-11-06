@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.4 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.5 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -37,7 +37,7 @@ The background downloader uses a 256 KiB Core2 transfer buffer with bounded
 backpressure. The Module stores and decodes the MP3; verified HTTP completion,
 an end-to-end transfer hash and successful complete decoding are required before
 speaking. The direct route allows one retry, with the same response message ID.
-Each assistant message retains its own full text and audio cache. The current
+Each assistant message retains its own full text and audio cache. Ongoing tasks remain open across progress acknowledgements; native preparation waits for task completion and final-text settling. A revised final response receives fresh audio instead of reusing its acknowledgement cache. The current
 text limit is 8 KiB per message and the audio bound is 32 MiB. A voice response
 without readable text produces an explicit error rather than silently losing
 the reader. Native pronunciation follows Muse; the local normalization rules
