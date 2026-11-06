@@ -332,3 +332,32 @@ voice/volume settings and read-only archive integrity checks passed. Original
 archive entries were preserved. No ADB restart, SuperDisplay change, pairing reset,
 Module service restart or NVS erase was used. Private task confirmations and
 diagnostic captures are excluded from the public repository.
+
+## Edition 0.3.6 idle-link recovery
+
+Follow-up checks also encountered a stalled Module UART parser. Re-synchronizing
+the Core2 restored communication, but the old runtime only performed that operation
+at startup. This release adds bounded recovery following idle status/hello timeouts,
+and paces small JSON messages as well as large ones. The exact trigger of every
+observed serial stall has not been established; this is recovery protection, not a
+claim that all transport failures are prevented.
+
+Eleven additional native tests exercise the production timeout handler and UART
+writer, including Recorder protection, paused playback, listening, attempt limits,
+cooldown, unchanged bytes and failed writes. They passed on the Module and in the
+77-test Linux suite. The reference application compiled, passed application-slot
+write/digest verification and retained its settings.
+
+A controlled physical test injected an incomplete frame with no executable action
+or work target. The runtime detected the timeout and restored Ready automatically
+in 29.8 seconds, including the recovery cooldown. UI frame counts confirmed that
+Core2 did not reboot. Recorder was idle throughout; Module services and SuperDisplay
+were not restarted. This fault injection was performed through a guarded serial
+maintenance fixture, which refuses recording, playback and active native transfers.
+
+An existing public native-voice fixture then played its complete 57,600-byte clip,
+reached its final reader word and returned to Ready. Pause/Resume, Stop, Restart,
+Settings and reader resizing passed on that saved clip. Cached Restart began in
+about 0.24 seconds in two observations. These are fixture observations, not network
+latency guarantees. No new Muse question or private conversation was submitted for
+this final fixture check.
