@@ -1,5 +1,11 @@
 # Release history
 
+## 0.4.1
+
+- Retry word alignment with analysis-only silence padding, keeping the original audio unchanged and retaining measured word anchors.
+- Explicitly stop the background transfer on Stop, preserving verified sections for Restart.
+- Use standard resumable HTTPS for the one-time public checker-model download.
+
 ## 0.4.0
 
 - Prepare Helio/Aria narration as bounded sections with two concurrent generation workers, admitting opening sentences before the complete story finishes transferring.

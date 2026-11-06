@@ -1358,7 +1358,7 @@ static void playback_button_tick(void)
         if(action==3 && s_conversation_title)lv_obj_send_event(lv_obj_get_parent(s_conversation_title),LV_EVENT_CLICKED,NULL);
         if(action==4 && s_tv)lv_tileview_set_tile(s_tv,s_face,LV_ANIM_OFF);
         if(action==5 && s_library_narration_test)muse_module_llm_cancel(s_library_narration_generation);
-        if(action==6 && s_library_narration_test){if(s_playback_test_volume<0)s_playback_test_volume=muse_settings_volume();muse_settings_ui_bench_volume(s_playback_test_volume/2,false);}
+        if(action==6 && (st.state==MUSE_MODULE_LLM_SPEAKING || st.state==MUSE_MODULE_LLM_PREPARING)){if(s_playback_test_volume<0)s_playback_test_volume=muse_settings_volume();muse_settings_ui_bench_volume(s_playback_test_volume/2,false);}
         if(action==7 && s_playback_test_volume>=0){muse_settings_ui_bench_volume(s_playback_test_volume,true);s_playback_test_volume=-1;}
         muse_module_llm_status(&st);
         printf("@startup {\"enabled\":%s,\"visible\":%s,\"version\":\"%s\"}\n",muse_settings_startup_splash()?"true":"false",muse_startup_visible()?"true":"false",MUSE_STORYTELLER_VERSION);

@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.4.0 repairs and extends an optional native Muse audio path. Development uses
+Edition 0.4.1 repairs and extends an optional native Muse audio path. Development uses
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.
@@ -82,6 +82,9 @@ prepare short sections in script order. A free local English Whisper Tiny checke
 in the same Muse VM verifies script agreement and unexpected repetition, then
 aligns every spoken word to the decoded audio. A rejected section is synthesized
 once more; a second failure becomes an explicit error rather than unchecked speech.
+Word alignment can retry with silence around its analysis window. The delivered
+audio is unchanged; this corrects unstable edge anchors without replacing them
+with whole-clip proportional estimates.
 
 Core2 retrieves the plan, each MP3, checksum and word anchors over its existing
 authenticated native file connection. The Module verifies the script, pronunciation,
@@ -119,6 +122,8 @@ offline synthesis. Piper and Whisper recognition continue to run locally.
   `sections-ready.json` only after loading the local checker successfully. No
   browser credentials, exported account token, PC process or paid speech service
   is required. The section helper runs with `voice-env/bin/python3`.
+  The one-time model download uses standard HTTPS with its existing resumable
+  cache, avoiding the optional Xet transport that stalled the reference setup.
 - The Module requires compatible ARM64 Python CTranslate2 and tokenizers packages,
   NumPy, a Tiny English CTranslate2 Whisper model, faster-whisper's matching
   feature extractor/tokenizer helpers, and the SDK's CC0 minimp3 decoder compiled
@@ -138,6 +143,14 @@ produces at most 32 MiB of audio, bounds section jobs to 300 seconds (legacy cli
 to 180 seconds), and exclusively
 claims a job to prevent duplicate synthesis. No listener, new provider, account
 credential export or new paid subscription is introduced.
+
+Muse still has to produce and write the script before its opening sections can
+be retrieved. That server work can dominate startup latency. The upstream
+[native file API](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/linux/README.md)
+is conditional on server enablement: the reference device's `POST /fs/write`
+test returned HTTP 403. A direct script queue was therefore not shipped or
+advertised as available, and the supported existing Muse delivery route remains
+in use. No alternative credentials or permission bypass were attempted.
 
 The helper atomically replaces `meta.json`. Version 2 `sections` permits verified
 opening playback; per-section metadata is published only after validation and alignment.

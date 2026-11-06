@@ -2515,7 +2515,7 @@ static void handle(const cmd_t &cmd)
             emit(MUSE_HATCH_EV_HEARD,"Local playback test");message_done(0,"**Local playback test.** The blue lantern glowed beside the quiet river. This reply is generated on the device, with no Muse request. You can pause it, resume it, stop it, and restart it from the beginning. The text follows the voice as the story continues.\n\nThe lantern keeper walked slowly along the path. Beyond the trees, the village lights were shining. She smiled, knowing that the warm house was waiting for her. The path curved past a garden, and the night was calm.");
         }break;
     case CMD_PLAYBACK_STOP:
-        if(s_turn.phase!=P_IDLE&&!s_turn.text){drain_out();turn_done(false);muse_state_set_caption("Playback stopped");}
+        if(s_turn.phase!=P_IDLE&&!s_turn.text){muse_native_voice_cancel();drain_out();turn_done(false);muse_state_set_caption("Playback stopped");}
         s_restart_wait=false;s_transport_pending=false;break;
     case CMD_PLAYBACK_RESTART:restart_reply();break;
     case CMD_DEVICE_TEST:
