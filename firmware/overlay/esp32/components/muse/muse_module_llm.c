@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "muse_module_llm.h"
 #include "muse_memory.h"
@@ -138,7 +139,8 @@ static void recover_ascii_framing(void){
 static uint32_t s_play_generation, s_cancel_generation, s_record_epoch;
 static bool s_cancel_requested, s_cancel_valid;
 static muse_module_llm_playback_t s_playback;
-static char s_transcript[MUSE_LLM_TRANSCRIPT_MAX + 1];
+// Task-only text belongs in external RAM; preserve internal DMA headroom.
+EXT_RAM_BSS_ATTR static char s_transcript[MUSE_LLM_TRANSCRIPT_MAX + 1];
 static muse_module_llm_status_t s_status = {
     .state = MUSE_MODULE_LLM_DISCOVERING,
     .detail = "LOADING VOICE...",

@@ -60,14 +60,14 @@
 #define ROW_H 58
 #define MAX_APS 12
 
-#define COLOR_TEXT 0xf2efff
-#define COLOR_DIM 0x8b84a8
-#define COLOR_CARD 0x1a1530
-#define COLOR_CARD_PRESSED 0x2e2552
-#define COLOR_ACCENT 0xa77dff
-#define COLOR_OK 0x6ff0bf
-#define COLOR_WARN 0xffb45c
-#define COLOR_DANGER 0xff5c5c
+#define COLOR_TEXT 0xf0edff
+#define COLOR_DIM 0x8780a8
+#define COLOR_CARD 0x171230
+#define COLOR_CARD_PRESSED 0x2a1f52
+#define COLOR_ACCENT 0x9c6dff
+#define COLOR_OK 0x5ff0b9
+#define COLOR_WARN 0xffab48
+#define COLOR_DANGER 0xff4848
 
 typedef void (*text_done_cb_t)(const char *text);
 
@@ -320,7 +320,7 @@ static lv_obj_t *switch_row(lv_obj_t *list, const char *text, bool on, lv_event_
     lv_obj_set_flex_grow(t, 1);
     lv_obj_t *sw = lv_switch_create(c);
     lv_obj_set_size(sw, 60, 32);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(0x3a3358), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(0x362e58), LV_PART_MAIN);
     lv_obj_set_style_bg_color(sw, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR | LV_STATE_CHECKED);
     if (on) {
         lv_obj_add_state(sw, LV_STATE_CHECKED);
@@ -363,7 +363,7 @@ static lv_obj_t *slider(lv_obj_t *list, const char *text, int lo, int hi, int va
     lv_obj_align(s, LV_ALIGN_TOP_MID, 0, 40);
     lv_slider_set_range(s, lo, hi);
     lv_slider_set_value(s, value, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(s, lv_color_hex(0x2a2345), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s, lv_color_hex(0x271f45), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s, lv_color_hex(COLOR_TEXT), LV_PART_KNOB);
     lv_obj_set_style_pad_all(s, 6, LV_PART_KNOB);
@@ -1149,7 +1149,7 @@ static void build_microphone_meter(lv_obj_t *list)
     lv_obj_set_size(s_mic_bar, lv_pct(94), 10);
     lv_obj_align(s_mic_bar, LV_ALIGN_TOP_MID, 0, 26);
     lv_bar_set_range(s_mic_bar, 0, 60);   /* -70..-10 dBFS */
-    lv_obj_set_style_bg_color(s_mic_bar, lv_color_hex(0x2a2345), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_mic_bar, lv_color_hex(0x271f45), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_mic_bar, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_anim_duration(s_mic_bar, 80, 0);
     if (muse_board->epaper) {
@@ -1504,18 +1504,18 @@ static void weather_icon_draw(lv_event_t *e){
  bool sun=code<=2,cloud=code!=0,rain=(code>=51&&code<=67)||(code>=80&&code<=82),snow=(code>=71&&code<=77)||code==85||code==86,storm=code>=95,fog=code==45||code==48;
  if(sun){
   int cx=cloud?27:21,cy=cloud?13:22;
-  weather_shape(layer,x,y,cx-7,cy-7,15,15,LV_RADIUS_CIRCLE,0xffd47c);
+  weather_shape(layer,x,y,cx-7,cy-7,15,15,LV_RADIUS_CIRCLE,0xffcf6c);
   const int rays[8][4]={{0,-11,0,-15},{8,-8,11,-11},{11,0,15,0},{8,8,11,11},{0,11,0,15},{-8,8,-11,11},{-11,0,-15,0},{-8,-8,-11,-11}};
-  for(unsigned n=0;n<8;n++){if(cloud && n>2)continue;weather_stroke(layer,x,y,cx+rays[n][0],cy+rays[n][1],cx+rays[n][2],cy+rays[n][3],0xffd47c,2);}
+  for(unsigned n=0;n<8;n++){if(cloud && n>2)continue;weather_stroke(layer,x,y,cx+rays[n][0],cy+rays[n][1],cx+rays[n][2],cy+rays[n][3],0xffcf6c,2);}
  }
  if(cloud){
-  uint32_t color=fog?0xa69abf:0xd1c0f0;
+  uint32_t color=fog?0xa395bf:0xcdbaf0;
   weather_shape(layer,x,y,4,18,18,18,LV_RADIUS_CIRCLE,color);weather_shape(layer,x,y,13,10,22,22,LV_RADIUS_CIRCLE,color);weather_shape(layer,x,y,25,20,16,16,LV_RADIUS_CIRCLE,color);weather_shape(layer,x,y,10,24,26,12,5,color);
  }
- if(rain){for(int n=0;n<3;n++)weather_stroke(layer,x,y,12+n*10,39,9+n*10,46,0x7bc9ff,3);}
- if(snow){for(int n=0;n<3;n++){int cx=10+n*12;weather_stroke(layer,x,y,cx,39,cx,47,0xc5eeff,1);weather_stroke(layer,x,y,cx-3,41,cx+3,45,0xc5eeff,1);weather_stroke(layer,x,y,cx-3,45,cx+3,41,0xc5eeff,1);}}
- if(storm){weather_stroke(layer,x,y,23,34,17,41,0xffd47c,3);weather_stroke(layer,x,y,17,41,25,41,0xffd47c,3);weather_stroke(layer,x,y,25,41,18,48,0xffd47c,3);}
- if(fog){weather_stroke(layer,x,y,4,40,37,40,0xa69abf,2);weather_stroke(layer,x,y,9,46,32,46,0xa69abf,2);}
+ if(rain){for(int n=0;n<3;n++)weather_stroke(layer,x,y,12+n*10,39,9+n*10,46,0x6ac2ff,3);}
+ if(snow){for(int n=0;n<3;n++){int cx=10+n*12;weather_stroke(layer,x,y,cx,39,cx,47,0xbeecff,1);weather_stroke(layer,x,y,cx-3,41,cx+3,45,0xbeecff,1);weather_stroke(layer,x,y,cx-3,45,cx+3,41,0xbeecff,1);}}
+ if(storm){weather_stroke(layer,x,y,23,34,17,41,0xffcf6c,3);weather_stroke(layer,x,y,17,41,25,41,0xffcf6c,3);weather_stroke(layer,x,y,25,41,18,48,0xffcf6c,3);}
+ if(fog){weather_stroke(layer,x,y,4,40,37,40,0xa395bf,2);weather_stroke(layer,x,y,9,46,32,46,0xa395bf,2);}
 }
 #if LV_USE_SNAPSHOT
 void muse_settings_ui_bench_weather_forecast(void){if(s_weather_list && s_weather_tiles[0]){lv_obj_update_layout(s_weather_list);lv_obj_scroll_to_y(s_weather_list,lv_obj_get_y(s_weather_tiles[0]),LV_ANIM_OFF);}}
@@ -1576,7 +1576,7 @@ static void build_recorder_page(lv_obj_t *tile){
  s_rec_status=note(list,"Connecting to local recorder...");
  s_rec_note=label(list,&lv_font_montserrat_14,COLOR_DIM,"");lv_obj_set_width(s_rec_note,lv_pct(100));lv_label_set_long_mode(s_rec_note,LV_LABEL_LONG_MODE_WRAP);
  s_rec_progress=lv_bar_create(list);lv_obj_set_size(s_rec_progress,lv_pct(100),48);lv_bar_set_range(s_rec_progress,0,100);
- lv_obj_set_style_bg_color(s_rec_progress,lv_color_hex(0x302642),0);lv_obj_set_style_bg_opa(s_rec_progress,LV_OPA_COVER,0);lv_obj_set_style_radius(s_rec_progress,10,0);lv_obj_set_style_radius(s_rec_progress,10,LV_PART_INDICATOR);lv_obj_set_style_bg_color(s_rec_progress,lv_color_hex(0x66508c),LV_PART_INDICATOR);lv_obj_set_style_border_color(s_rec_progress,lv_color_hex(COLOR_ACCENT),0);lv_obj_set_style_border_width(s_rec_progress,1,0);lv_obj_remove_flag(s_rec_progress,LV_OBJ_FLAG_SCROLLABLE);
+ lv_obj_set_style_bg_color(s_rec_progress,lv_color_hex(0x2e2242),0);lv_obj_set_style_bg_opa(s_rec_progress,LV_OPA_COVER,0);lv_obj_set_style_radius(s_rec_progress,10,0);lv_obj_set_style_radius(s_rec_progress,10,LV_PART_INDICATOR);lv_obj_set_style_bg_color(s_rec_progress,lv_color_hex(0x61488c),LV_PART_INDICATOR);lv_obj_set_style_border_color(s_rec_progress,lv_color_hex(COLOR_ACCENT),0);lv_obj_set_style_border_width(s_rec_progress,1,0);lv_obj_remove_flag(s_rec_progress,LV_OBJ_FLAG_SCROLLABLE);
  s_rec_progress_text=label(s_rec_progress,&lv_font_montserrat_14,COLOR_TEXT,"");lv_obj_set_width(s_rec_progress_text,lv_pct(94));lv_obj_set_style_text_align(s_rec_progress_text,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(s_rec_progress_text);s_rec_complete_at=0;
  s_rec_stop=rec_button(list,"Stop & Save",COLOR_WARN,2);s_rec_continue=rec_button(list,"Screen off / Continue",COLOR_ACCENT,3);
  s_rec_start=rec_button(list,"Start local recording",COLOR_OK,1);s_rec_read=rec_button(list,"Read saved transcript",COLOR_ACCENT,4);
@@ -1668,7 +1668,7 @@ static void command_guide_card(lv_obj_t *list,const char *title,const char *comm
     lv_obj_set_style_pad_all(c,13,0);
     lv_obj_set_style_pad_row(c,9,0);
     lv_obj_set_style_border_width(c,1,0);
-    lv_obj_set_style_border_color(c,lv_color_hex(0x35274d),0);
+    lv_obj_set_style_border_color(c,lv_color_hex(0x32224d),0);
     command_guide_text(c,title,&lv_font_montserrat_14,COLOR_ACCENT);
     command_guide_text(c,commands,&lv_font_montserrat_16,COLOR_TEXT);
     if(tip)command_guide_text(c,tip,&lv_font_montserrat_14,COLOR_DIM);

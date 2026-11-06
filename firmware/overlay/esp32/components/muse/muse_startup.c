@@ -52,36 +52,36 @@ void muse_startup_show(bool preview){
     muse_startup_hide();s_preview=preview;s_ticks=0;s_started=lv_tick_get();
     s_cover=lv_obj_create(lv_screen_active());lv_obj_remove_style_all(s_cover);
     lv_obj_set_size(s_cover,lv_pct(100),lv_pct(100));lv_obj_set_style_bg_opa(s_cover,LV_OPA_COVER,0);
-    lv_obj_set_style_bg_color(s_cover,lv_color_hex(0x100f1c),0);
+    lv_obj_set_style_bg_color(s_cover,lv_color_hex(0x0e0d1c),0);
     lv_obj_remove_flag(s_cover,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_flag(s_cover,LV_OBJ_FLAG_CLICKABLE);lv_obj_add_event_cb(s_cover,skipped,LV_EVENT_CLICKED,NULL);
     lv_obj_t *frame=lv_obj_create(s_cover);lv_obj_remove_style_all(frame);lv_obj_set_size(frame,114,114);
     s_frame=frame;
     lv_obj_align(frame,LV_ALIGN_TOP_MID,0,12);lv_obj_set_style_radius(frame,LV_RADIUS_CIRCLE,0);
     lv_obj_set_style_clip_corner(frame,true,0);lv_obj_set_style_border_width(frame,1,0);
-    lv_obj_set_style_border_color(frame,lv_color_hex(0xa484cf),0);lv_obj_remove_flag(frame,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_border_color(frame,lv_color_hex(0x9f7bcf),0);lv_obj_remove_flag(frame,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *art=lv_image_create(frame);lv_image_set_src(art,&muse_splash_avatar);lv_obj_center(art);
     lv_obj_remove_flag(art,LV_OBJ_FLAG_CLICKABLE);
     for(unsigned i=0;i<3;i++){
         s_orbit[i]=lv_obj_create(s_cover);lv_obj_remove_style_all(s_orbit[i]);lv_obj_set_size(s_orbit[i],6,6);
         lv_obj_set_style_radius(s_orbit[i],LV_RADIUS_CIRCLE,0);
-        lv_obj_set_style_bg_color(s_orbit[i],lv_color_hex(i?0xa484cf:0x8be0cb),0);
+        lv_obj_set_style_bg_color(s_orbit[i],lv_color_hex(i?0x9f7bcf:0x80e0c8),0);
         lv_obj_set_style_bg_opa(s_orbit[i],(lv_opa_t)(255-i*65),0);
         lv_obj_remove_flag(s_orbit[i],LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
     }
-    text_at(s_cover,"MUSE STORYTELLER",&lv_font_montserrat_20,0xf0e8ff,139);
-    text_at(s_cover,"v" MUSE_STORYTELLER_VERSION "  /  Dread7us",&lv_font_montserrat_14,0xc4b2ff,170);
+    text_at(s_cover,"MUSE STORYTELLER",&lv_font_montserrat_20,0xeee5ff,139);
+    text_at(s_cover,"v" MUSE_STORYTELLER_VERSION "  /  Dread7us",&lv_font_montserrat_14,0xbda8ff,170);
 
-    text_at(s_cover,"Tap anywhere to skip",&lv_font_montserrat_14,0x9c91b4,218);
+    text_at(s_cover,"Tap anywhere to skip",&lv_font_montserrat_14,0x998db4,218);
     s_loading=lv_label_create(s_cover);lv_obj_set_width(s_loading,lv_pct(100));
     lv_obj_set_style_text_align(s_loading,LV_TEXT_ALIGN_CENTER,0);lv_obj_set_style_text_font(s_loading,&lv_font_montserrat_14,0);
-    lv_obj_set_style_text_color(s_loading,lv_color_hex(0x8be0cb),0);lv_obj_set_y(s_loading,190);
+    lv_obj_set_style_text_color(s_loading,lv_color_hex(0x80e0c8),0);lv_obj_set_y(s_loading,190);
     lv_label_set_text(s_loading,preview?"LOCAL VOICE. CONNECTED STORIES.":"Loading voice and microphone...");
     s_track=lv_obj_create(s_cover);lv_obj_remove_style_all(s_track);lv_obj_set_size(s_track,120,3);lv_obj_align(s_track,LV_ALIGN_TOP_MID,0,210);
-    lv_obj_set_style_radius(s_track,2,0);lv_obj_set_style_clip_corner(s_track,true,0);lv_obj_set_style_bg_color(s_track,lv_color_hex(0x332746),0);lv_obj_set_style_bg_opa(s_track,255,0);
+    lv_obj_set_style_radius(s_track,2,0);lv_obj_set_style_clip_corner(s_track,true,0);lv_obj_set_style_bg_color(s_track,lv_color_hex(0x312346),0);lv_obj_set_style_bg_opa(s_track,255,0);
     lv_obj_remove_flag(s_track,LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
     s_glow=lv_obj_create(s_track);lv_obj_remove_style_all(s_glow);lv_obj_set_size(s_glow,36,3);lv_obj_set_style_radius(s_glow,2,0);
-    lv_obj_set_style_bg_color(s_glow,lv_color_hex(0x8be0cb),0);lv_obj_set_style_bg_opa(s_glow,255,0);lv_obj_remove_flag(s_glow,LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(s_glow,lv_color_hex(0x80e0c8),0);lv_obj_set_style_bg_opa(s_glow,255,0);lv_obj_remove_flag(s_glow,LV_OBJ_FLAG_CLICKABLE);
     s_timer=lv_timer_create(expired,40,NULL);
     ESP_LOGI("muse_startup","Storyteller %s splash shown (%s)",MUSE_STORYTELLER_VERSION,preview?"preview":"boot");
 }

@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "muse_memory.h"
 #include "muse_module_llm.h"
@@ -27,9 +28,9 @@ typedef struct {
 } job_t;
 static QueueHandle_t s_jobs;
 static SemaphoreHandle_t s_mutex;
-static muse_memory_view_t s_view;
-static muse_usage_view_t s_usage;
-static muse_recorder_view_t s_recorder;
+EXT_RAM_BSS_ATTR static muse_memory_view_t s_view;
+EXT_RAM_BSS_ATTR static muse_usage_view_t s_usage;
+EXT_RAM_BSS_ATTR static muse_recorder_view_t s_recorder;
 static bool s_recorder_starting;
 void muse_memory_recorder_copy(muse_recorder_view_t *out){if(!out)return;memset(out,0,sizeof(*out));if(s_mutex){xSemaphoreTake(s_mutex,portMAX_DELAY);*out=s_recorder;out->active=out->active||s_recorder_starting;xSemaphoreGive(s_mutex);}}
 bool muse_memory_recorder_active(void){if(!s_mutex)return false;xSemaphoreTake(s_mutex,portMAX_DELAY);bool active=s_recorder.active||s_recorder_starting;xSemaphoreGive(s_mutex);return active;}

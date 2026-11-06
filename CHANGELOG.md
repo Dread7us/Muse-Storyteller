@@ -1,5 +1,10 @@
 # Release history
 
+## 0.3.9
+
+- Increase interface palette saturation by 12.5%, preserving hue and peak brightness. Colors are precomputed, adding no per-frame color processing.
+- Move task-only transcript, archive, usage and Recorder view state into PSRAM to preserve the network's internal-memory reserve after repeated playback and Settings use.
+
 ## 0.3.8
 
 - Batch prepared Helio/Aria audio into bounded 32 KiB network reads, while keeping the Module link's individually checked packets at 1536 bytes.

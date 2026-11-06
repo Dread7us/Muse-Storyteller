@@ -418,3 +418,35 @@ file callbacks, stale generations, acknowledgement fences, subprocess failure an
 active/idle reply polling. The Windows run passed 60 tests with 19 platform skips.
 The physical firmware build refers to the reference installation; the sanitized
 public weather/profile differences described above remain applicable.
+
+## Edition 0.3.9 palette and sustained-use headroom
+
+A later repeated-use check exposed a remaining failure after successful initial
+playback: DMA-capable free memory had fallen to about 15 KiB, below the existing
+16 KiB send reserve. The next online reply could receive text but stall while
+preparing its voice. Initial cold-boot success alone did not cover that sequence.
+
+The update moves 5,485 bytes of task-only transcript and archive/Recorder/usage
+view state from internal BSS into external RAM. The linker's allocation map
+confirmed the placement. UART buffers, task stacks and the network safety floor
+retain their working configuration. This is additional headroom, not removal
+of the safety check or a claim of unlimited memory.
+
+The interface's palette saturation is increased by 12.5%, with hue and peak RGB
+brightness retained. Grayscale remains unchanged. Palette values are precomputed;
+the renderer does no extra per-pixel conversion. Actual Sound and Ready captures
+were inspected for legible text, controls and the battery indicator.
+
+The reference application compiled, passed application-slot digest and boot
+checks, and retained Aria, 60% volume and pairing. After using Sound and the
+voice-selection screen, a fresh reply started in 21.2 seconds, played completely
+and reached its final word. Available DMA memory during preparation was about
+24–25 KiB. Muse's text generation took longer in this run, illustrating the
+server-dependent portion of the initial wait.
+
+Pause/Resume, Stop, Sound access and reader resizing then passed again. Cached
+Restart began at the opening words in 0.69 seconds; local Piper completed its
+confirmation and Aria/60% were restored. After an idle interval, another fresh
+reply started in 23.8 seconds and finished through its final word without a
+transfer retry. DMA headroom remained around 20 KiB, and the raw/control links
+stayed up through the sequence that had previously stalled.

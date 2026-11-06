@@ -23,5 +23,5 @@ static inline int muse_status_wifi_percent(bool connected,int rssi)
 }
 static inline unsigned muse_status_battery_color(int pct)
 {
-    return !muse_status_percent_valid(pct)?0x8b829c:pct<=10?0xff778a:pct<=25?0xffc978:0x7ce5bb;
+    return !muse_status_percent_valid(pct)?0x897f9c:pct<=10?0xff667b:pct<=25?0xffc267:0x6fe5b6;
 }
