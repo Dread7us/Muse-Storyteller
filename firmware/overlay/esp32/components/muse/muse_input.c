@@ -805,6 +805,7 @@ static bool console_command(char *line, bool whole)
         printf("@weather {\"valid\":%s,\"busy\":%s,\"temperature_f\":%.1f,\"wind_mph\":%.1f,\"age_seconds\":%lu,\"time\":\"%s\",\"note\":\"%s\"}\n",w.valid?"true":"false",w.busy?"true":"false",w.temperature,w.wind,(unsigned long)w.age_seconds,w.time,w.note);fflush(stdout);return true;
     }
     if(!strcmp(line,"device.readerstate")){uint32_t version=0;unsigned count=0;size_t bytes=0;muse_conversation_diagnostic(&version,&count,&bytes);printf("@conversation_model {\"version\":%lu,\"count\":%u,\"bytes\":%u}\n",(unsigned long)version,count,(unsigned)bytes);fflush(stdout);return true;}
+    if(!strcmp(line,"device.uart_recovery_test")){printf("@uart_recovery_test {\"queued\":%s}\n",muse_module_llm_test_framing_stall()?"true":"false");fflush(stdout);return true;}
     if(!strcmp(line,"device.cleartest")){muse_chat_clear_bench();return true;}
     if(!strncmp(line,"device.nativefixture=",21)){muse_chat_native_fixture_key(line+21);return true;}
     if(!strcmp(line,"device.nativefixture")){printf("@native_fixture {\"queued\":%s}\n",muse_chat_native_fixture()?"true":"false");fflush(stdout);return true;}

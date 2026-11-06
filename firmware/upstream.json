@@ -60,7 +60,7 @@
     },
     "esp32/components/muse/muse_input.c": {
       "base_sha256": "d234aa73d7dca4895f98fecffb0dacf24eed64e6d92286aa4bec784613bc264d",
-      "overlay_sha256": "20b377f392ba6415253933850bff39db0feddaf3a9b020e7e21dea9a01b47791"
+      "overlay_sha256": "bedefe119bb5e9f32b9eb1e46261ebc688a0313f47dc16087d607a37484666da"
     },
     "esp32/components/muse/muse_memory.c": {
       "base_sha256": null,
@@ -72,11 +72,11 @@
     },
     "esp32/components/muse/muse_module_llm.c": {
       "base_sha256": null,
-      "overlay_sha256": "6f41fdeb0010082d5a6e7f2ce228012200526cebcd914707e83f3e496fbe3ee3"
+      "overlay_sha256": "6a01d7fe1fef8f7c3c2671e0b6247e0161499ab5cabb70a4a1cda60a91e8296e"
     },
     "esp32/components/muse/muse_module_llm.h": {
       "base_sha256": null,
-      "overlay_sha256": "ae64a25c89e0ae0e9348c9a5420c3bcdecd87c29dc8b1ec962463efa744a4c54"
+      "overlay_sha256": "5d75926f0771c9b565656098637e247c2bd3b8101e62674b43a55c7461ccf6fd"
     },
     "esp32/components/muse/muse_module_llm_protocol.c": {
       "base_sha256": null,
@@ -208,7 +208,7 @@
     },
     "esp32/components/muse/muse_storyteller_version.h": {
       "base_sha256": null,
-      "overlay_sha256": "47f6587c41c50832b051af5675caed47d7e7c2f4b1750c56e1d91a2f232d2606"
+      "overlay_sha256": "c6e7edad161553dcac0b22df4cce6d93490228ae4a9f4a67eb6e0b20fcf89eca"
     },
     "esp32/components/muse/muse_startup.h": {
       "base_sha256": null,

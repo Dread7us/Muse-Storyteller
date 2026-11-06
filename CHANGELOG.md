@@ -1,5 +1,12 @@
 # Release history
 
+## 0.3.6
+
+- Recover an unresponsive idle UART link after a failed status check and hello timeout, without rebooting either device or restarting the Module's services.
+- Limit recovery to two attempts per outage, with a cooldown and a stable-ready period before replenishing the allowance; protect Recorder, listening and playback operations.
+- Pace small control/archive JSON messages as well as larger requests in bounded bursts, preserving the exact serialized bytes.
+- Add a guarded serial maintenance fixture for checking recovery from an incomplete, non-executable frame.
+
 ## 0.3.5
 
 - Fix lost tool-task confirmations: persisted message sequences and live-update sequences use different counters; a valid saved final reply must not be discarded as an old live event.

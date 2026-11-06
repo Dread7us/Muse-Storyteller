@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.3.5**
+**Edition v0.3.6**
 
 ### A small companion. A better voice. Stories worth listening to.
 

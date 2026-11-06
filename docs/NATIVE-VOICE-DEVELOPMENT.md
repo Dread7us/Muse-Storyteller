@@ -1,6 +1,6 @@
 # Native Muse narration
 
-Edition 0.3.5 repairs and extends an optional native Muse audio path. It was built and tested on
+Edition 0.3.6 repairs and extends an optional native Muse audio path. It was built and tested on
 the reference Core2 v1.1 + Module LLM installation. The portable installer does
 not yet provision its additional timing assets automatically; fresh installations
 should keep Local selected until those prerequisites have been installed.

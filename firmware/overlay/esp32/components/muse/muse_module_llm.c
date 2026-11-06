@@ -49,14 +49,21 @@ bool muse_module_llm_send_line(const char *json){
     // The Module's UART has no hardware flow control. Give its receive path
     // breathing room between bounded bursts of a large JSON request.
     for(size_t at=0;at<n && ok;){
-        size_t count=n-at;if(n>1024 && count>128)count=128;
+        size_t count=n-at;if(count>128)count=128;
         ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,json+at,count)==(int)count;at+=count;
-        if(n>1024 && ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
+        if(ok){ok=uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000))==ESP_OK;vTaskDelay(1);}
     }
     if(ok)ok=uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1)==1;
     xSemaphoreGive(s_tx_mutex);return ok;
 }
 void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
+bool muse_module_llm_test_framing_stall(void){
+    muse_native_voice_status_t native;muse_native_voice_status(&native);
+    portENTER_CRITICAL(&s_lock);bool idle=s_ready&&s_diag_op==0;portEXIT_CRITICAL(&s_lock);
+    if(!idle||native.active||muse_memory_recorder_active())return false;
+    // Synthetic incomplete frame has no action/work target and cannot execute.
+    return muse_module_llm_send_line("{\"request_id\":\"framing-test\",\"data\":{\"text\":\"unfinished");
+}
 bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length){
     if(!s_tx_mutex||!json||strncmp(json,"{\"RAW\":",7)||strlen(json)>2048||!data||!length||length>8192)return false;
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
@@ -74,7 +81,7 @@ static void recover_uart_framing(void){
     // A Core2 reset can interrupt either a JSON request or our bounded RAW
     // body. Drain at most one 8192-byte body, then terminate the vendor's
     // brace accumulator. Invalid old audio still fails its mandatory hash.
-    // Run only when this Core2 task starts, before claiming a voice session.
+    // Also usable after bounded idle-link timeouts, before reclaiming a session.
     static const uint8_t zeros[512]={0};
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
     // A truncated RAW *header* may enter body mode only when first closed;
@@ -116,6 +123,8 @@ typedef struct {
     uint32_t nonce, serial, generation, generation_counter, chat_generation, record_epoch;
     char request_id[48], session[9];
     int64_t deadline, retry_at, next_status_at, waiting_since, pause_since, control_at;
+    int64_t next_framing_recovery, stable_ready_since;
+    unsigned framing_recoveries;
     unsigned speech_speed;
     char external_key[25];
     bool accepted, speaking, end_requested, cancel_failed, stop_unconfirmed, no_speech;
@@ -501,9 +510,19 @@ static void check_deadline(runtime_t *r, int64_t now)
     if (!r->deadline || now < r->deadline) return;
     if (r->operation == OP_LISTEN) end_listening(r);
     else if (r->operation == OP_HELLO || r->operation == OP_STATUS) {
+        bool hello_timeout=r->operation==OP_HELLO;
         portENTER_CRITICAL(&s_lock); s_ready = false; portEXIT_CRITICAL(&s_lock);
         fail(r, "LOADING VOICE...");
         set_status(MUSE_MODULE_LLM_DISCOVERING, waiting_detail(r, now));
+        r->stable_ready_since=0;
+        if(hello_timeout && r->framing_recoveries<2 && now>=r->next_framing_recovery && !muse_memory_recorder_active()){
+            // No listening/playback operation is active here. The TX mutex
+            // prevents interleaving with an audio block; incomplete blocks still
+            // require their original checksum before they can enter the cache.
+            recover_uart_framing();r->framing_recoveries++;
+            r->next_framing_recovery=now+30000000LL;
+            ESP_LOGW(TAG,"idle UART framing recovery %u",r->framing_recoveries);
+        }
         r->retry_at = now + 2000000LL;
     } else if (r->operation == OP_CANCEL) {
         r->stop_unconfirmed = true;
@@ -533,6 +552,10 @@ static void runtime_task(void *unused)
         int64_t now = esp_timer_get_time();
         portENTER_CRITICAL(&s_lock);s_diag_op=r.operation;s_diag_at=now;portEXIT_CRITICAL(&s_lock);
         portENTER_CRITICAL(&s_lock); bool ready = s_ready; portEXIT_CRITICAL(&s_lock);
+        if(ready){
+            if(!r.stable_ready_since)r.stable_ready_since=now;
+            if(now-r.stable_ready_since>=60000000LL)r.framing_recoveries=0;
+        }else r.stable_ready_since=0;
         portENTER_CRITICAL(&s_lock);
         bool monitor = s_monitor, monitor_changed = s_monitor_changed;
         s_monitor_changed = false;
