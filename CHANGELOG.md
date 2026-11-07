@@ -1,5 +1,10 @@
 # Release history
 
+## 0.5.2
+
+- Clear the acknowledged paused state when Resume lands exactly at the end of an audio block, allowing the next sentence and its controls to continue normally.
+- Keep the device in Buffering when a resume acknowledgment arrives before the next sentence is ready; only actual playback can restore Speaking.
+
 ## 0.5.1
 
 - Activate the first conversation page explicitly at startup so the reader updates before any swipe or Settings visit.

@@ -5,6 +5,26 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'module/runtime'))
 import muse_playback_control as playback
 
 class Position(unittest.TestCase):
+ def test_resume_at_an_audio_block_boundary_always_acknowledges_unpaused(self):
+  clock=[0.];control=playback.PlaybackControl(60);states=[];paused_once=[False]
+  class Backend:
+   word_schedule=[];word_callback=None;active_play=False;playback_control=control
+   playback_state_callback=lambda self,on:states.append(on)
+   def stop_audio(self):pass
+   def rpc(self,unit,action,data=None):
+    if action=='play_raw':return b'None'
+    if clock[0]>=1.9 and not paused_once[0]:
+     # A delayed poll/control boundary reaches the end of this PCM block
+     # just as Pause arrives. The following sentence still needs Resume ACK.
+     paused_once[0]=True;clock[0]=2.1;control.update(True,60)
+    return b'Runing' if clock[0]<2.2 else b'None'
+  class Cancel:
+   def wait(self,seconds):
+    clock[0]+=seconds
+    if clock[0]>=3:control.update(False,60)
+  with patch.object(playback,'time',types.SimpleNamespace(monotonic=lambda:clock[0])):
+   result=playback.play(Backend(),b'\0'*(2*32000),60,Cancel(),lambda c:None,lambda data,v:data,16000,lambda code,message:RuntimeError(message))
+  self.assertTrue(result['joined']);self.assertEqual(states,[True,False])
  def test_volume_and_pause_resume_use_audio_position_not_late_highlights(self):
   clock=[0.];control=playback.PlaybackControl(60);starts=[];changes=set();callbacks=[]
   class Backend:

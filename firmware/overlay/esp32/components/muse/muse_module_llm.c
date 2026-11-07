@@ -298,6 +298,17 @@ static void end_listening(runtime_t *r)
     if (!send_command(r, "listen_end", NULL, 0)) cancel_operation(r, true);
 }
 
+static void playback_pause_update(runtime_t *r,bool paused,int64_t now)
+{
+    if(paused&&!r->pause_since)r->pause_since=now;
+    if(!paused&&r->pause_since){r->deadline+=now-r->pause_since;r->pause_since=0;}
+    portENTER_CRITICAL(&s_lock);s_status.paused=paused;portEXIT_CRITICAL(&s_lock);
+    if(r->speaking){
+        if(r->buffering_since)set_status(MUSE_MODULE_LLM_PREPARING,paused?"PAUSED":"BUFFERING NEXT SENTENCE...");
+        else set_status(MUSE_MODULE_LLM_SPEAKING,paused?"PAUSED":"SPEAKING...");
+    }
+}
+
 static void on_frame(const char *frame, size_t length, void *context)
 {
     runtime_t *r = context;
@@ -326,11 +337,7 @@ static void on_frame(const char *frame, size_t length, void *context)
     if(event.kind==MUSE_LLM_EVENT_PLAYBACK){
         const cJSON *paused=cJSON_GetObjectItemCaseSensitive(reply.data,"paused");
         if(r->operation==OP_SPEAK && cJSON_IsBool(paused)){
-            int64_t now=esp_timer_get_time();bool on=cJSON_IsTrue(paused);
-            if(on && !r->pause_since)r->pause_since=now;
-            if(!on && r->pause_since){r->deadline+=now-r->pause_since;r->pause_since=0;}
-            portENTER_CRITICAL(&s_lock);s_status.paused=on;portEXIT_CRITICAL(&s_lock);
-            if(r->speaking)set_status(MUSE_MODULE_LLM_SPEAKING,on?"PAUSED":"SPEAKING...");
+            playback_pause_update(r,cJSON_IsTrue(paused),esp_timer_get_time());
         }
         muse_llm_reply_free(&reply);return;
     }

@@ -46,7 +46,15 @@ def play(backend,pcm,volume,cancel,check_cancel,scale_pcm,rate,Error):
     offset=bookmark();backend.stop_audio();active=False
    if not active:
     offset=max(0.,min(offset,expected));sample=int(offset*rate)*2
-    if sample>=len(pcm):backend.stop_audio();return {'pcm_bytes':len(pcm),'observed_running':True,'joined':True}
+    if sample>=len(pcm):
+     backend.stop_audio()
+     # Pause can land after the last hardware-status poll, at the end of
+     # this block. Resume must still clear its acknowledged paused state
+     # before the series advances to another sentence or completes.
+     if was_paused:
+      was_paused=False
+      if callback:callback(False)
+     return {'pcm_bytes':len(pcm),'observed_running':True,'joined':True}
     index=next((i for i,w in enumerate(schedule) if w[0]>=offset),len(schedule))
     chunk=scale_pcm(pcm[sample:],wanted)
     backend.stop_audio()
