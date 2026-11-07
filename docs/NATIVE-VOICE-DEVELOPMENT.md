@@ -160,6 +160,34 @@ test returned HTTP 403. A direct script queue was therefore not shipped or
 advertised as available, and the supported existing Muse delivery route remains
 in use. No alternative credentials or permission bypass were attempted.
 
+### Work-remaining display
+
+Edition 0.5.0 overlaps model loading with the first two synthesis calls and the
+device's script transfer. The same speech, acoustic alignment and checksum gates
+still run before a section can play. This removes a serial dependency; the time
+spent generating Muse's response remains outside the device's control.
+
+The reader's full-to-empty bar means **estimated work remaining**. The initial
+model uses 36 seconds for Muse's response and `2 + 0.27 × opening words` seconds
+for preparation. Once a verified plan arrives, it replaces the response estimate
+with the observed time and uses the planned opening word count. It estimates the
+opening buffer, not every word of a long story. The Module still admits playback
+only after its actual complete-sentence and audio-duration requirements pass.
+
+Successful non-recovery openings update the local response time and preparation
+seconds per word using 80% previous / 20% new observation. Tiny cached replays,
+cancelled jobs and missing measurements are excluded. The small timing model is
+saved in a separate NVS namespace only while idle, avoiding flash writes during
+narration. Startup has its own learned estimate. No conversation content or
+credentials are stored in the model.
+
+The bar never refills when its estimate changes. It stays at least 3% full until
+actual playback readiness, switches to elapsed time when overdue, and reaches
+zero only when speech is admitted. `*` marks estimates. Pausing freezes the
+countdown; cancellation/error cannot claim Ready. Local voice preparation and
+later sentence buffering use their own preparation windows. Actual downloaded
+part counts and the script's normalized word count appear when available.
+
 The helper atomically replaces `meta.json`. Version 2 `sections` permits verified
 opening playback; per-section metadata is published only after validation and alignment.
 The final joined hash must still cover every section. Legacy `streaming` allows early buffering;

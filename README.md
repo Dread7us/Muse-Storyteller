@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.5.0**
+**Edition v0.5.1**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -39,7 +39,7 @@ section, and incorrect or repeating generated speech is retried before admission
 Pause, live volume, Stop and cached Restart stay available during narration and buffering.
 This path requires the matching Muse-side helpers described in the setup notes.
 Fresh online replies still depend on Muse's response and audio-generation time;
-the latest successful fresh-response check took about 50 seconds to first speech.
+a prior successful fresh-response check took about 50 seconds to first speech.
 See the [measured checks and remaining limit](docs/VALIDATION.md#editions-040041-verified-sentence-narration).
 The startup splash and reply reader now show a full-to-empty **work remaining**
 bar with the current step and an estimated countdown. Estimates are marked `*`,

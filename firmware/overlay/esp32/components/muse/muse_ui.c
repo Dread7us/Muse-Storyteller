@@ -2023,6 +2023,8 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
         s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+        /* Reader/touch updates must recognize the first page before any swipe. */
+        lv_tileview_set_tile(s_tv,s_face,LV_ANIM_OFF);
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -2642,7 +2644,8 @@ static void loading_tick(muse_mode_t mode,float now)
 {
     static bool tracking,learned,rebuffering,save_pending;static float started,paused_at,paused_seconds,ready_until,next,local_at;
     static char key[25];static muse_wait_countdown_t countdown;
-    if(!s_loading_panel||now<next)return;next=now+.1f;
+    if(!s_loading_panel||now<next)return;
+    next=now+.1f;
     muse_module_llm_status_t st;muse_module_llm_status(&st);
     muse_native_voice_status_t p;muse_native_voice_status(&p);
     bool speaking=st.state==MUSE_MODULE_LLM_SPEAKING;

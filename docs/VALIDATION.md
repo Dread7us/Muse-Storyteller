@@ -501,3 +501,29 @@ The Windows run with the isolated analysis dependencies passed 88 tests with 19
 platform skips. The initial branch workflow failed because a new test called
 `.case` instead of `.run_case`; correcting that test restored successful checks.
 Private recordings, transcripts, logs, account state and device backups remain local.
+
+## Editions 0.5.0–0.5.1 loading feedback
+
+The reference 0.5.0 application compiled, passed application-only flash/digest and
+boot checks, and retained Aria, 60% volume and pairing. Its real loading screen was
+captured and visually inspected. The reader's new bar started at 100% work remaining,
+decreased without refilling, reached zero when speech started, then disappeared.
+The complete public test reply finished. Pause/Resume, Sound access, reader resizing,
+Stop and cached Restart passed; Restart began in 0.73 seconds.
+
+That fresh reply began in 30.45 seconds, including a diagnostic screen capture
+during preparation. Server response time, test length and capture overhead differ
+from earlier runs, so this is not a controlled measurement of the speedup. The
+model-loading overlap is separately covered by a test that blocks model loading
+until synthesis starts and checks that no playable section bypasses verification.
+Actual future startup times remain variable.
+
+The countdown model is tested against word-count scaling, invalid saved values,
+bounded learning, revised estimates, overdue responses and new sessions. Zero is
+reserved for readiness, rather than the estimate's expiry. The Linux suite passed
+all 137 tests; Windows passed 90 with 20 platform skips. The build also caught a
+formatting warning in the first candidate, corrected before installation.
+
+A subsequent first-page check found that the reader could retain its hint until
+a Settings visit because the tile view's initial active page was not explicit.
+Edition 0.5.1 selects that page during construction, before navigation callbacks.

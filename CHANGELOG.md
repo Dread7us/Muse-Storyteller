@@ -1,5 +1,9 @@
 # Release history
 
+## 0.5.1
+
+- Activate the first conversation page explicitly at startup so the reader updates before any swipe or Settings visit.
+
 ## 0.5.0
 
 - Show a full-to-empty work-remaining bar inside the reader and animated startup splash, with current activity, estimated time and real readiness gating.
