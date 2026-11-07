@@ -527,3 +527,9 @@ formatting warning in the first candidate, corrected before installation.
 A subsequent first-page check found that the reader could retain its hint until
 a Settings visit because the tile view's initial active page was not explicit.
 Edition 0.5.1 selects that page during construction, before navigation callbacks.
+The corrected application passed flash readback and boot checks. Its first cached
+reply rendered 910 characters and advanced its word highlight before any navigation;
+Pause/Resume and Stop passed again. Aria, 60% volume and the native network connection
+were retained. Final read-only checks matched every deployed Module runtime source,
+preserved all 382 original archived messages and passed database integrity. Recorder
+and playback were idle, both USB devices were connected and SuperDisplay was running.
