@@ -162,6 +162,8 @@ typedef struct {
     char request_id[48], session[9];
     int64_t deadline, retry_at, next_status_at, waiting_since, pause_since, control_at;
     int64_t next_framing_recovery, stable_ready_since, buffering_since;
+    int64_t control_pending_since,control_recover_at;
+    unsigned control_recoveries;
     unsigned framing_recoveries;
     unsigned speech_speed;
     char external_key[25];
@@ -520,7 +522,7 @@ static void handle(runtime_t *r, command_t *command)
         }
         new_generation(r);
         r->operation = OP_SPEAK;
-        r->pause_since=0;r->control_at=0;
+        r->pause_since=0;r->control_at=0;r->control_pending_since=0;r->control_recover_at=0;r->control_recoveries=0;
         r->chat_generation = command->chat_generation;
         r->speech_speed=command->speech_speed;strlcpy(r->external_key,command->external_key,sizeof(r->external_key));
         /* A failure ceiling, never a signal that the speaker finished. */
@@ -539,10 +541,24 @@ static void handle(runtime_t *r, command_t *command)
     free(command->text);
 }
 
+static bool resume_recovery_due(bool actual,bool requested,int64_t since,int64_t now,unsigned attempts,int64_t retry_at)
+{
+    return actual&&!requested&&since>0&&now-since>=2000000LL&&attempts<2&&now>=retry_at;
+}
+
 static void playback_controls(runtime_t *r,int64_t now)
 {
 if(r->operation==OP_SPEAK && r->accepted){
     portENTER_CRITICAL(&s_lock);bool dirty=s_control_dirty,paused=s_status.pause_requested,actual=s_status.paused;int volume=s_live_volume;portEXIT_CRITICAL(&s_lock);
+    if(paused!=actual){if(!r->control_pending_since)r->control_pending_since=now;}
+    else{r->control_pending_since=0;r->control_recoveries=0;}
+    if(r->pause_since&&resume_recovery_due(actual,paused,r->control_pending_since,now,r->control_recoveries,r->control_recover_at)&&
+       !muse_memory_recorder_active()&&uxQueueMessagesWaiting(s_commands)==0){
+        // Only the operation owner resets ASCII framing; the TX mutex keeps
+        // this between complete writes. No audio/session/cache is cancelled.
+        recover_ascii_framing();r->control_recoveries++;r->control_recover_at=now+3000000LL;r->control_at=0;dirty=true;
+        ESP_LOGW(TAG,"recovering paused voice controls (%u/2)",r->control_recoveries);
+    }
     if(volume>=0 && (dirty || paused!=actual || (r->control_at && now-r->control_at>=3000000)) && now-r->control_at>=150000){
         cJSON *root=cJSON_CreateObject(),*d=root?cJSON_AddObjectToObject(root,"data"):NULL;
         if(d){char id[48];snprintf(id,sizeof(id),"ctl-%08lx-%08lx",(unsigned long)r->nonce,(unsigned long)++r->serial);
@@ -567,8 +583,8 @@ bool muse_module_llm_recover_idle_link(void){
     portENTER_CRITICAL(&s_lock);if(s_recovery_request==token)s_recovery_request=0;portEXIT_CRITICAL(&s_lock);return false;
 }
 
-static bool transfer_recovery_allowed(unsigned op,bool commands_pending){
-    return !commands_pending&&!muse_memory_recorder_active()&&(op==OP_NONE||op==OP_HELLO||op==OP_STATUS);
+static bool transfer_recovery_allowed(unsigned op,bool commands_pending,bool paused){
+    return !commands_pending&&!muse_memory_recorder_active()&&(op==OP_NONE||op==OP_HELLO||op==OP_STATUS||(op==OP_SPEAK&&paused));
 }
 
 static void check_deadline(runtime_t *r, int64_t now)
@@ -625,10 +641,11 @@ static void runtime_task(void *unused)
         }else r.stable_ready_since=0;
         portENTER_CRITICAL(&s_lock);unsigned recovery=s_recovery_request;s_recovery_request=0;portEXIT_CRITICAL(&s_lock);
         if(recovery){
-            // Only the operation owner may reset framing. User capture/control
-            // commands win, and no listening or playback can start concurrently.
-            bool permitted=transfer_recovery_allowed(r.operation,uxQueueMessagesWaiting(s_commands)>0);
-            if(permitted){recover_ascii_framing();ESP_LOGW(TAG,"recovering idle voice transfer");}
+            // A checked ASCII upload can stall while its player is paused.
+            // Permit the same bounded delimiter repair without joining audio
+            // or changing the session. Capture and queued commands still win.
+            bool permitted=transfer_recovery_allowed(r.operation,uxQueueMessagesWaiting(s_commands)>0,r.pause_since!=0);
+            if(permitted){recover_ascii_framing();ESP_LOGW(TAG,"recovering voice transfer framing");}
             portENTER_CRITICAL(&s_lock);s_recovery_done=recovery;s_recovery_ok=permitted;portEXIT_CRITICAL(&s_lock);
         }
         portENTER_CRITICAL(&s_lock);

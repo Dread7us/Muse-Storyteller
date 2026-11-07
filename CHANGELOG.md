@@ -1,5 +1,10 @@
 # Release history
 
+## 0.5.3
+
+- Recover a stalled ASCII upload while narration is acknowledged paused, without cancelling audio, changing its position or discarding checked sections.
+- Retry the serial framing repair at most twice for a stuck Resume acknowledgment. Recorder activity and queued user commands retain priority.
+
 ## 0.5.2
 
 - Clear the acknowledged paused state when Resume lands exactly at the end of an audio block, allowing the next sentence and its controls to continue normally.

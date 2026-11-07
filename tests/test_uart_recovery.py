@@ -59,8 +59,10 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];runtime_t r
  else if(c=="cap"){r.framing_recoveries=2;check_deadline(&r,100);assert(!recovered);}
  else if(c=="cooldown"){r.next_framing_recovery=200;check_deadline(&r,100);assert(!recovered);}
  else if(c=="early"){check_deadline(&r,99);assert(!recovered&&r.operation==OP_HELLO&&s_ready);}
- else if(c=="transfer_policy"){assert(transfer_recovery_allowed(OP_NONE,false)&&transfer_recovery_allowed(OP_STATUS,false));assert(!transfer_recovery_allowed(OP_NONE,true)&&!transfer_recovery_allowed(OP_SPEAK,false)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false)&&!transfer_recovery_allowed(OP_LISTEN,false));}
- else if(c=="transfer_recorder"){protected_recorder=true;assert(!transfer_recovery_allowed(OP_NONE,false)&&!transfer_recovery_allowed(OP_HELLO,false));}
+ else if(c=="transfer_policy"){assert(transfer_recovery_allowed(OP_NONE,false,false)&&transfer_recovery_allowed(OP_STATUS,false,false));assert(!transfer_recovery_allowed(OP_NONE,true,false)&&!transfer_recovery_allowed(OP_SPEAK,false,false)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false,false)&&!transfer_recovery_allowed(OP_LISTEN,false,false));}
+ else if(c=="transfer_recorder"){protected_recorder=true;assert(!transfer_recovery_allowed(OP_NONE,false,false)&&!transfer_recovery_allowed(OP_HELLO,false,false)&&!transfer_recovery_allowed(OP_SPEAK,false,true));}
+ else if(c=="paused_transfer"){assert(transfer_recovery_allowed(OP_SPEAK,false,true));assert(!transfer_recovery_allowed(OP_SPEAK,true,true));}
+ else if(c=="listening_protected"){assert(!transfer_recovery_allowed(OP_LISTEN,false,true)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false,true)&&!transfer_recovery_allowed(OP_LISTEN_END,false,true)&&!transfer_recovery_allowed(OP_CANCEL,false,true));}
  else if(c=="pacing"){for(size_t n:{2,147,179,900,1024,5000}){wire.clear();bursts.clear();waits=0;std::string payload(n,'a');assert(muse_module_llm_send_line(payload.c_str()));assert(wire==payload+"\n");assert(*std::max_element(bursts.begin(),bursts.end())<=128);assert(waits==(int)((n+127)/128));}}
  else if(c=="write_failure"){fail_write=2;std::string payload(900,'a');assert(!muse_module_llm_send_line(payload.c_str()));assert(wire.size()==128&&bursts.size()==2);}
  else if(c=="brace_roundtrip"){std::string payload=R"({"data":{"text":"An unmatched { and escaped \"quote\" and a literal backslash \\{."}})";assert(muse_module_llm_send_line(payload.c_str()));std::cout<<wire;}
@@ -89,6 +91,8 @@ class UartRecovery(unittest.TestCase):
     def test_no_recovery_before_deadline(self):self.case('early')
     def test_transfer_recovery_yields_to_capture_and_queued_commands(self):self.case('transfer_policy')
     def test_transfer_recovery_protects_recorder(self):self.case('transfer_recorder')
+    def test_acknowledged_pause_allows_ascii_transfer_repair(self):self.case('paused_transfer')
+    def test_pause_flag_cannot_allow_repair_during_capture_or_cancellation(self):self.case('listening_protected')
     def test_small_and_large_json_are_paced_without_byte_changes(self):self.case('pacing')
     def test_failed_write_stops_before_next_frame(self):self.case('write_failure')
     def test_json_string_braces_round_trip_without_vendor_nesting(self):
