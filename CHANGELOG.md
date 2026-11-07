@@ -1,5 +1,11 @@
 # Release history
 
+## 0.5.0
+
+- Show a full-to-empty work-remaining bar inside the reader and animated startup splash, with current activity, estimated time and real readiness gating.
+- Estimate opening preparation from its word count and locally learned response/preparation times. Retain a visible nonzero bar and elapsed-time message when an estimate is exceeded; freeze estimates while paused.
+- Overlap local timing-model loading, the first two online synthesis calls and the device's script transfer, retaining all speech, alignment and checksum checks before playback.
+
 ## 0.4.1
 
 - Use a dedicated English acoustic CTC model for word boundaries, while Tiny Whisper separately checks generated speech for mismatch/repetition. This avoids zero-length word anchors produced by the former attention-based timing analyzer.

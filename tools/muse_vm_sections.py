@@ -74,7 +74,7 @@ def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
     raise RuntimeError('Narration section could not be generated') from last
 
 def synthesize_sections(folder,voice,speed='normal',executable='/opt/hatch/bin/tts',
-                        ffmpeg='ffmpeg',deadline_seconds=300,checker=None):
+                        ffmpeg='ffmpeg',deadline_seconds=300,checker=None,checker_factory=None):
     from muse_speech_text import SpeechText
     folder=Path(folder)
     if folder.is_symlink() or not folder.is_dir():raise ValueError('Invalid job directory')
@@ -83,17 +83,24 @@ def synthesize_sections(folder,voice,speed='normal',executable='/opt/hatch/bin/t
     raw,text=read_source(folder);spoken=SpeechText(text);parts=plan_sections(spoken)
     claim=os.open(folder/'claimed',os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(claim)
     started=time.monotonic();deadline=started+deadline_seconds
-    if checker is None:
-        from muse_vm_speech_check import SpeechCheck
-        checker=SpeechCheck(Path.home()/'muse-storyteller'/'models'/'tiny.en')
     plan=dict(version=2,source_sha256=hashlib.sha256(raw).hexdigest(),sections=parts)
     atomic_json(folder/'plan.json',plan)
     meta=dict(version=2,state='sections',voice=voice,speed=speed,source_bytes=len(raw),
               source_sha256=plan['source_sha256'],section_count=len(parts),ready_sections=0,audio_bytes=0)
     atomic_json(folder/'meta.json',meta)
     try:
-        # Bounded parallelism; submit the opening sections first.
-        with ThreadPoolExecutor(max_workers=2,thread_name_prefix='muse-section') as pool:
+        # Model loading, the first synthesis calls and the device's script
+        # transfer overlap. Admission still waits for the same full checks.
+        with ThreadPoolExecutor(max_workers=1,thread_name_prefix='muse-checker') as loader, \
+             ThreadPoolExecutor(max_workers=2,thread_name_prefix='muse-section') as pool:
+            if checker is None:
+                if checker_factory is None:
+                    from muse_vm_speech_check import SpeechCheck
+                    checker_factory=lambda:SpeechCheck(Path.home()/'muse-storyteller'/'models'/'tiny.en')
+                loaded=loader.submit(checker_factory)
+                class DeferredCheck:
+                    def check(self,*args):return loaded.result(timeout=max(.1,deadline-time.monotonic())).check(*args)
+                checker=DeferredCheck()
             pending=[pool.submit(_render,folder,p,spoken,voice,speed,executable,ffmpeg,deadline,checker) for p in parts]
             digest=hashlib.sha256();total=0
             with (folder/'audio.mp3').open('xb') as joined:

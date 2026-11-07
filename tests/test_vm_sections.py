@@ -1,4 +1,4 @@
-import hashlib,json,sys,tempfile,types,unittest
+import hashlib,json,sys,tempfile,threading,types,unittest
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
@@ -7,6 +7,32 @@ import muse_vm_sections as sections
 from muse_speech_text import SpeechText
 
 class GeneratedSections(unittest.TestCase):
+ def test_synthesis_and_plan_transfer_can_start_before_models_finish_loading(self):
+  with tempfile.TemporaryDirectory() as directory:
+   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed. The river was quiet.')
+   rendering=threading.Event();checked=[]
+   class Checker:
+    def check(self,*args):checked.append(True);return dict(aligned=True)
+   def factory():
+    self.assertTrue(rendering.wait(2),'Synthesis incorrectly waits for model loading')
+    self.assertTrue((folder/'plan.json').exists());self.assertTrue((folder/'meta.json').exists())
+    return Checker()
+   def render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
+    rendering.set();self.assertTrue(checker.check(b'', 'test', 0)['aligned'])
+    (folder/('part-%03d.mp3'%part['index'])).write_bytes(b'a'*144)
+    return dict(audio_bytes=144)
+   with patch.object(sections,'_render',side_effect=render):
+    result=sections.synthesize_sections(folder,'avocado_v2:MAI_01',checker_factory=factory)
+   self.assertEqual(result['state'],'complete');self.assertEqual(len(checked),2)
+ def test_model_load_failure_cannot_publish_playable_audio(self):
+  with tempfile.TemporaryDirectory() as directory:
+   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed.')
+   def factory():raise RuntimeError('Model unavailable')
+   def render(*args):return args[-1].check(b'', 'test', 0)
+   with patch.object(sections,'_render',side_effect=render),self.assertRaises(RuntimeError):
+    sections.synthesize_sections(folder,'avocado_v2:MAI_01',checker_factory=factory)
+   self.assertEqual(json.loads((folder/'meta.json').read_text())['state'],'error')
+   self.assertFalse((folder/'part-000.mp3').exists())
  def test_failed_voice_is_retried_before_any_section_is_published(self):
   with tempfile.TemporaryDirectory() as directory:
    folder=Path(directory);spoken=SpeechText('The blue lantern glowed beside the quiet river at midnight.')

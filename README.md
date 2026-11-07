@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.4.1**
+**Edition v0.5.0**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -41,6 +41,9 @@ This path requires the matching Muse-side helpers described in the setup notes.
 Fresh online replies still depend on Muse's response and audio-generation time;
 the latest successful fresh-response check took about 50 seconds to first speech.
 See the [measured checks and remaining limit](docs/VALIDATION.md#editions-040041-verified-sentence-narration).
+The startup splash and reply reader now show a full-to-empty **work remaining**
+bar with the current step and an estimated countdown. Estimates are marked `*`,
+learn locally from successful preparation, and never reach zero before real readiness.
 
 Sound now also offers **Muse app voice – direct**: it retrieves the response's
 native audio without asking Muse to create and deliver a separate file. It uses

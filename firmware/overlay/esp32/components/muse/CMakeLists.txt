@@ -50,7 +50,7 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
     if(CONFIG_MUSE_MODULE_LLM)
-        list(APPEND srcs "muse_startup.c" "muse_splash_art.c" "muse_native_voice.cpp" "muse_module_llm.c" "muse_module_llm_protocol.c"
+        list(APPEND srcs "muse_startup.c" "muse_wait_estimate.c" "muse_splash_art.c" "muse_native_voice.cpp" "muse_module_llm.c" "muse_module_llm_protocol.c"
              "muse_conversation.c" "muse_conversation_model.c" "muse_memory.c" "muse_rich_text.c" "muse_reader_bold_font.c" "muse_reader_italic_font.c" "muse_reader_bold_italic_font.c" "muse_reader_code_font.c")
     endif()
     list(APPEND srcs "muse_chat_text.c")

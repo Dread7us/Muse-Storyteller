@@ -18,6 +18,8 @@ void muse_native_voice_cancel(void);
 bool muse_native_voice_has_pending_sections(void);
 typedef struct {
     unsigned phase,received,total,elapsed_ms,error,recoveries;
+    unsigned source_ready_ms,opening_ready_ms,words_total,opening_words,words_ready;
+    unsigned sections_total,sections_ready,audio_ready_ms,detail;
     bool active;
     char job[25];
 } muse_native_voice_status_t;

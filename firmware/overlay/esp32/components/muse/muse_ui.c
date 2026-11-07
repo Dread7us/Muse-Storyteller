@@ -55,6 +55,7 @@
 #include "muse_module_llm.h"
 #include "muse_startup.h"
 #include "muse_native_voice.h"
+#include "muse_wait_estimate.h"
 #include "muse_storyteller_version.h"
 #define HAS_MODULE_AUDIO true
 #else
@@ -875,6 +876,9 @@ static void on_ring_draw(lv_event_t *e)
 #if CONFIG_MUSE_MODULE_LLM
 static lv_obj_t *s_conversation, *s_conversation_body, *s_conversation_label, *s_conversation_title;
 static lv_obj_t *s_conversation_header, *s_conversation_latest_button, *s_conversation_follow_button, *s_conversation_follow_label;
+static lv_obj_t *s_loading_panel,*s_loading_bar,*s_loading_text,*s_loading_note;
+static bool s_loading_visible;
+static muse_wait_view_t s_loading_view;
 static char *s_conversation_text;
 static char *s_rich_text;
 static uint16_t *s_rich_positions;
@@ -1178,11 +1182,14 @@ static void conversation_size(void)
     s_reader_decor_dirty=true;s_reader_layout_dirty=true;s_reader_layout_valid=false;
     unsigned mode = s_conversation_size_mode;
     int w = s_w - (mode == 2 ? 8 : 16);
-    int h = mode == 2 ? s_h - 48 - (s_transport_visible ? MUSE_TRANSPORT_RESERVED_PX : 0) : mode == 1 ? 94 : 74;
+    int loading=s_loading_visible?38:0;
+    int h = mode == 2 ? s_h - 48 - (s_transport_visible ? MUSE_TRANSPORT_RESERVED_PX : 0) : (mode == 1 ? 94 : 74)+loading;
     lv_obj_set_pos(s_conversation, mode == 2 ? 4 : 8, mode == 2 ? 46 : s_h - (s_transport_visible ? MUSE_TRANSPORT_RESERVED_PX : 30) - h);
     lv_obj_set_size(s_conversation, w, h);
     int transport=0; /* the container already reserves the playback row */
-    lv_obj_set_size(s_conversation_body, w - 18, h - 38 - (mode == 2 ? 28 : 0) - transport);
+    lv_obj_set_y(s_conversation_body,30+loading);
+    lv_obj_set_size(s_conversation_body, w - 18, h - 38 - (mode == 2 ? 28 : 0) - transport-loading);
+    if(s_loading_panel){lv_obj_set_width(s_loading_panel,w-18);lv_obj_set_width(s_loading_bar,w-18);lv_obj_set_width(s_loading_text,w-24);lv_obj_set_width(s_loading_note,w-18);}
     if(s_archive_footer){
         lv_obj_set_pos(s_archive_footer,7,h-30-transport);lv_obj_set_width(s_archive_footer,w-14);
         if(mode==2)lv_obj_remove_flag(s_archive_footer,LV_OBJ_FLAG_HIDDEN);
@@ -1362,6 +1369,7 @@ static void playback_button_tick(void)
         if(action==7 && s_playback_test_volume>=0){muse_settings_ui_bench_volume(s_playback_test_volume,true);s_playback_test_volume=-1;}
         muse_module_llm_status(&st);
         printf("@startup {\"enabled\":%s,\"visible\":%s,\"version\":\"%s\"}\n",muse_settings_startup_splash()?"true":"false",muse_startup_visible()?"true":"false",MUSE_STORYTELLER_VERSION);
+        printf("@loading_ui {\"visible\":%s,\"remaining_percent\":%u,\"seconds\":%u,\"late\":%s}\n",s_loading_visible?"true":"false",s_loading_view.percent,s_loading_view.seconds,s_loading_view.late?"true":"false");
         printf("@playback_ui {\"speaker\":%s,\"restart_available\":%s,\"transport_busy\":%s,\"brightness\":%d,\"speed\":%d,\"paused\":%s,\"requested\":%s,\"visible\":%s,\"reader_size\":%d,\"settings\":%s,\"subpage\":%s,\"volume\":%d,\"preview_volume\":%d,\"touch_presses\":%lu}\n",muse_settings_speaker_on()?"true":"false",muse_chat_playback_can_restart()?"true":"false",muse_chat_playback_busy()?"true":"false",muse_settings_brightness(),muse_settings_speech_speed(),st.paused?"true":"false",st.pause_requested?"true":"false",visible?"true":"false",s_conversation_size_mode,s_tv && lv_tileview_get_tile_active(s_tv)==s_settings?"true":"false",muse_settings_ui_in_subpage()?"true":"false",muse_settings_volume(),s_preview_volume,(unsigned long)s_touch_presses);fflush(stdout);
         uint32_t model_version=0;unsigned model_count=0;size_t model_bytes=0;muse_conversation_diagnostic(&model_version,&model_count,&model_bytes);
         printf("@conversation_ui {\"version\":%lu,\"count\":%u,\"bytes\":%u,\"shown_version\":%lu,\"rendered_chars\":%u,\"touching\":%s,\"preview\":%s,\"archive\":%s}\n",(unsigned long)model_version,model_count,(unsigned)model_bytes,(unsigned long)s_conversation_version,(unsigned)s_reader_point_count,s_indev&&lv_indev_get_state(s_indev)==LV_INDEV_STATE_PRESSED?"true":"false",s_conversation_preview?"true":"false",s_archive_visible?"true":"false");fflush(stdout);
@@ -1810,6 +1818,15 @@ static void conversation_build(lv_obj_t *face)
     conversation_render("Your conversation appears here.\nDrag to read; tap the title for more room.");
     lv_label_set_text(s_conversation_label,s_reader_full_text);
     archive_build();
+    s_loading_panel=lv_obj_create(s_conversation);lv_obj_remove_style_all(s_loading_panel);lv_obj_set_pos(s_loading_panel,9,29);lv_obj_set_size(s_loading_panel,s_w-34,36);
+    lv_obj_remove_flag(s_loading_panel,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);lv_obj_add_flag(s_loading_panel,LV_OBJ_FLAG_HIDDEN);
+    s_loading_bar=lv_bar_create(s_loading_panel);lv_obj_remove_style_all(s_loading_bar);lv_obj_set_size(s_loading_bar,s_w-34,23);lv_bar_set_range(s_loading_bar,0,100);lv_bar_set_value(s_loading_bar,100,LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_loading_bar,lv_color_hex(0x21152e),0);lv_obj_set_style_bg_opa(s_loading_bar,255,0);lv_obj_set_style_radius(s_loading_bar,6,0);
+    lv_obj_set_style_border_width(s_loading_bar,1,0);lv_obj_set_style_border_color(s_loading_bar,lv_color_hex(0x9f7bcf),0);
+    lv_obj_set_style_bg_color(s_loading_bar,lv_color_hex(0x51336e),LV_PART_INDICATOR);lv_obj_set_style_bg_opa(s_loading_bar,255,LV_PART_INDICATOR);lv_obj_set_style_radius(s_loading_bar,6,LV_PART_INDICATOR);
+    lv_obj_remove_flag(s_loading_bar,LV_OBJ_FLAG_CLICKABLE);
+    s_loading_text=make_label(s_loading_panel,&lv_font_montserrat_14,0xf7f0ff);lv_obj_set_pos(s_loading_text,3,3);lv_obj_set_style_text_align(s_loading_text,LV_TEXT_ALIGN_CENTER,0);lv_label_set_long_mode(s_loading_text,LV_LABEL_LONG_MODE_DOTS);
+    s_loading_note=make_label(s_loading_panel,&lv_font_unscii_8,0xc5b4dc);lv_obj_set_y(s_loading_note,26);lv_obj_set_style_text_align(s_loading_note,LV_TEXT_ALIGN_CENTER,0);lv_label_set_long_mode(s_loading_note,LV_LABEL_LONG_MODE_DOTS);
     conversation_size();
     lv_obj_update_layout(s_conversation);
     reader_window_refresh();
@@ -2620,11 +2637,64 @@ static void update_power(float now)
     }
 }
 
+#if CONFIG_MUSE_MODULE_LLM
+static void loading_tick(muse_mode_t mode,float now)
+{
+    static bool tracking,learned,rebuffering,save_pending;static float started,paused_at,paused_seconds,ready_until,next,local_at;
+    static char key[25];static muse_wait_countdown_t countdown;
+    if(!s_loading_panel||now<next)return;next=now+.1f;
+    muse_module_llm_status_t st;muse_module_llm_status(&st);
+    muse_native_voice_status_t p;muse_native_voice_status(&p);
+    bool speaking=st.state==MUSE_MODULE_LLM_SPEAKING;
+    bool waiting=(mode==MUSE_MODE_THINKING||st.state==MUSE_MODULE_LLM_PREPARING)&&!muse_memory_recorder_active();
+    if(waiting&&!tracking){tracking=true;learned=false;rebuffering=p.opening_ready_ms&&st.state==MUSE_MODULE_LLM_PREPARING;started=now;paused_at=paused_seconds=ready_until=local_at=0;key[0]=0;countdown=(muse_wait_countdown_t){0};}
+    if(tracking&&p.active&&strcmp(key,p.job)){if(key[0])countdown=(muse_wait_countdown_t){0};strlcpy(key,p.job,sizeof(key));if(!rebuffering)started=now-p.elapsed_ms/1000.f;}
+    bool cloud=key[0]&&!strcmp(key,p.job)&&muse_settings_voice_source()==1;
+    if(tracking&&speaking&&!ready_until){
+        ready_until=now+.7f;
+        if(!learned&&!rebuffering&&cloud&&!p.recoveries&&p.source_ready_ms>2000&&p.opening_ready_ms>p.source_ready_ms&&p.words_ready){
+            muse_wait_learn(muse_wait_model(),p.source_ready_ms/1000.f,(p.opening_ready_ms-p.source_ready_ms)/1000.f,p.opening_words);save_pending=true;learned=true;
+        }
+    }
+    bool visible=tracking&&(waiting||(ready_until&&now<ready_until))&&!s_archive_visible;
+    if(!waiting&&(!ready_until||now>=ready_until)){tracking=false;visible=false;}
+    if(save_pending&&!tracking&&mode==MUSE_MODE_IDLE&&st.state==MUSE_MODULE_LLM_READY){muse_wait_save();save_pending=false;}
+    if(s_loading_visible!=visible){s_loading_visible=visible;lv_obj_set_flag(s_loading_panel,LV_OBJ_FLAG_HIDDEN,!visible);conversation_size();}
+    if(!visible)return;
+    bool paused=st.paused||st.pause_requested;
+    if(paused&&!paused_at)paused_at=now;
+    if(!paused&&paused_at){paused_seconds+=now-paused_at;paused_at=0;}
+    float elapsed=(paused_at?paused_at:now)-started-paused_seconds;
+    muse_wait_model_t *model=muse_wait_model();
+    float budget=cloud?(p.source_ready_ms?p.source_ready_ms/1000.f:model->response_s)+muse_wait_budget(model,p.opening_words):model->response_s+muse_wait_budget(model,0);
+    if(!cloud&&st.state==MUSE_MODULE_LLM_PREPARING){if(!local_at)local_at=elapsed;budget=local_at+muse_wait_budget(model,0);}
+    if(rebuffering)budget=muse_wait_budget(model,18);
+    s_loading_view=muse_wait_countdown(&countdown,elapsed,budget,speaking);
+    const char *step="Waiting for Muse";
+    if(st.state==MUSE_MODULE_LLM_PREPARING)step=cloud&&p.opening_ready_ms?"Buffering next sentence":"Preparing local voice";
+    if(cloud&&p.source_ready_ms&&!rebuffering)step=p.detail==2?"Downloading audio":p.detail==3?"Checking audio":"Creating and timing voice";
+    if(cloud&&p.phase==7)step="Reconnecting audio";
+    char text[96],note[96];
+    if(speaking){strlcpy(text,"Ready to play | 0% left",sizeof(text));strlcpy(note,"Opening audio checked and buffered",sizeof(note));}
+    else if(paused){strlcpy(text,"Paused | waiting to continue",sizeof(text));snprintf(note,sizeof(note),"%u%% left | estimate paused",s_loading_view.percent);}
+    else{
+        if(s_loading_view.late)snprintf(text,sizeof(text),"%s | %us elapsed",step,(unsigned)elapsed);
+        else snprintf(text,sizeof(text),"%s | ~%us",step,s_loading_view.seconds);
+        if(cloud&&p.words_total)snprintf(note,sizeof(note),"%u%% left* | %u words | %u/%u parts",s_loading_view.percent,p.words_total,p.sections_ready,p.sections_total);
+        else snprintf(note,sizeof(note),"%u%% left* | %s",s_loading_view.percent,s_loading_view.late?"Taking longer than estimated":"Estimated; waiting for reply");
+    }
+    if(lv_bar_get_value(s_loading_bar)!=(int)s_loading_view.percent)lv_bar_set_value(s_loading_bar,s_loading_view.percent,LV_ANIM_OFF);
+    if(strcmp(lv_label_get_text(s_loading_text),text))lv_label_set_text(s_loading_text,text);
+    if(strcmp(lv_label_get_text(s_loading_note),note))lv_label_set_text(s_loading_note,note);
+}
+#endif
+
 static void update_status(muse_mode_t mode, float now)
 {
     uint32_t accent = muse_pixel_accent(mode);
     const char *name = mode == MUSE_MODE_IDLE ? s_idle_name : MODE_NAMES[mode];
 #if CONFIG_MUSE_MODULE_LLM
+    loading_tick(mode,now);
     static float preparing_since;static char preparing_label[48];
     muse_module_llm_status_t voice_state;muse_module_llm_status(&voice_state);
     if(voice_state.state==MUSE_MODULE_LLM_PREPARING){
@@ -2653,7 +2723,8 @@ static void update_status(muse_mode_t mode, float now)
         else if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
         else if(native.phase==2)snprintf(preparing_label,sizeof(preparing_label),"BUFFERING VOICE %uKB",native.received/1024);
         else if(native.phase==3)snprintf(preparing_label,sizeof(preparing_label),"CHECKING AUDIO");
-        else snprintf(preparing_label,sizeof(preparing_label),"CREATING VOICE %us",native.elapsed_ms/1000);
+        else if(native.source_ready_ms)snprintf(preparing_label,sizeof(preparing_label),"%s",native.detail==2?"DOWNLOADING VOICE":native.detail==3?"CHECKING AUDIO":"PREPARING VOICE");
+        else snprintf(preparing_label,sizeof(preparing_label),"WAITING FOR MUSE %us",native.elapsed_ms/1000);
         name=preparing_label;
     }
     if(!native.active && native.phase==5 && mode==MUSE_MODE_IDLE && muse_settings_voice_source()==1 && muse_chat_playback_can_restart())name=muse_native_voice_error_title();

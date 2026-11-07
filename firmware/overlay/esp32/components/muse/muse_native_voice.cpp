@@ -30,7 +30,7 @@ static int selected_voice,selected_speed;
 static char job[25];
 static muse_native_voice_status_t progress;
 static int64_t started_us,answer_ready_us;
-static void phase(unsigned value,unsigned error=0){portENTER_CRITICAL(&lock);progress.phase=value;progress.error=error;portEXIT_CRITICAL(&lock);}
+static void phase(unsigned value,unsigned error=0){portENTER_CRITICAL(&lock);progress.phase=value;progress.error=error;if(value==4&&!progress.opening_ready_ms){progress.opening_ready_ms=(unsigned)((esp_timer_get_time()-started_us)/1000);if(progress.words_ready)progress.opening_words=progress.words_ready;}portEXIT_CRITICAL(&lock);}
 static void buffered(size_t received,size_t total){portENTER_CRITICAL(&lock);progress.received=received;progress.total=total;portEXIT_CRITICAL(&lock);}
 EXT_RAM_BSS_ATTR static char script[8193];
 static int64_t now(){return esp_timer_get_time();}
@@ -298,7 +298,8 @@ static bool publish_sections_ready(){
     return true;
 }
 static bool transfer_sections(const char *source_hash,size_t source_bytes,unsigned sections,unsigned &stage,bool &retryable){
-    section_mode.store(true);auto &block=file_batch;size_t count=0,at=0,total=0;
+    section_mode.store(true);auto &block=file_batch;size_t count=0,at=0,total=0;unsigned ready_words=0;
+    portENTER_CRITICAL(&lock);if(!progress.source_ready_ms)progress.source_ready_ms=(unsigned)((now()-started_us)/1000);progress.detail=1;portEXIT_CRITICAL(&lock);
     stage=1;
     while(at<source_bytes&&!stopped()){
         size_t wanted=source_bytes-at;if(wanted>FILE_BATCH)wanted=FILE_BATCH;
@@ -313,6 +314,15 @@ static bool transfer_sections(const char *source_hash,size_t source_bytes,unsign
     block[count]=0;cJSON *plan=cJSON_Parse((char *)block);
     const char *hash=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(plan,"source_sha256"));
     if(!plan||!hash||strcmp(hash,source_hash)||cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(plan,"sections"))!=(int)sections){cJSON_Delete(plan);retryable=false;return false;}
+    unsigned words=0,opening=0;unsigned short word_counts[128]={0};
+    cJSON *parts=cJSON_GetObjectItemCaseSensitive(plan,"sections");
+    for(unsigned i=0;i<sections;i++){
+        cJSON *part=cJSON_GetArrayItem(parts,i);double n=cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(part,"word_count"));
+        if(n<1||n>36||n!=(unsigned)n){cJSON_Delete(plan);retryable=false;return false;}
+        word_counts[i]=(unsigned)n;words+=(unsigned)n;
+        if(!opening&&i>=1&&words>=36&&cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(part,"sentence_end")))opening=words;
+    }
+    portENTER_CRITICAL(&lock);progress.words_total=words;progress.opening_words=opening?opening:words;progress.sections_total=sections;portEXIT_CRITICAL(&lock);
     cJSON *begin=operation("series_begin");cJSON_AddStringToObject(begin,"text",script);cJSON_AddItemToObject(begin,"plan",plan);
     // rpc consumes the parsed plan before the next network read, returning its
     // small JSON allocations to the internal-memory reserve immediately.
@@ -321,6 +331,7 @@ static bool transfer_sections(const char *source_hash,size_t source_bytes,unsign
     if(opening_ready){phase(4);state.store(1);}
     if(cached&&opening_ready){sections_complete.store(true);return true;}
     for(unsigned index=0;index<sections&&!stopped();index++){
+        portENTER_CRITICAL(&lock);progress.detail=1;portEXIT_CRITICAL(&lock);
         char name[40],expected[65]={0};size_t bytes=0;bool found=false;
         snprintf(name,sizeof(name),"part-%03u.json",index);stage=2;
         int64_t deadline=now()+90000000;
@@ -344,6 +355,7 @@ static bool transfer_sections(const char *source_hash,size_t source_bytes,unsign
             pause_ms(150);
         }
         if(!found||stopped())return false;
+        portENTER_CRITICAL(&lock);progress.detail=2;portEXIT_CRITICAL(&lock);
         cJSON *request=operation("part_begin");cJSON_AddNumberToObject(request,"index",index);
         cJSON_AddNumberToObject(request,"bytes",bytes);cJSON_AddStringToObject(request,"sha256",expected);
         if(!rpc(request))return false;
@@ -365,6 +377,7 @@ static bool transfer_sections(const char *source_hash,size_t source_bytes,unsign
                 offset+=count;buffered(total+offset,0);
             }
             if(stopped())return false;
+            portENTER_CRITICAL(&lock);progress.detail=3;portEXIT_CRITICAL(&lock);
             cJSON *m=cJSON_Parse(section_metadata);request=operation("part_end");
             cJSON_AddNumberToObject(request,"pcm_samples",cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(m,"pcm_samples")));
             cJSON_AddBoolToObject(request,"aligned",cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m,"aligned")));
@@ -372,6 +385,8 @@ static bool transfer_sections(const char *source_hash,size_t source_bytes,unsign
             if(!rpc(request))return false;
         }
         total+=bytes;buffered(total,0);
+        ready_words+=word_counts[index];
+        portENTER_CRITICAL(&lock);progress.sections_ready=index+1;progress.words_ready=ready_words;progress.audio_ready_ms=(unsigned)((uint64_t)total/4);portEXIT_CRITICAL(&lock);
         if(!publish_sections_ready())return false;
         printf("@native_section {\"index\":%u,\"count\":%u,\"bytes\":%u,\"opening_ready\":%s}\n",index+1,sections,(unsigned)bytes,state.load()==1?"true":"false");fflush(stdout);
     }
