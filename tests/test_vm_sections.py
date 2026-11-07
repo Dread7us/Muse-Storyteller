@@ -9,7 +9,7 @@ from muse_speech_text import SpeechText
 class GeneratedSections(unittest.TestCase):
  def test_synthesis_and_plan_transfer_can_start_before_models_finish_loading(self):
   with tempfile.TemporaryDirectory() as directory:
-   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed. The river was quiet.')
+   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed beside the old window. The river was quiet under the midnight sky.')
    rendering=threading.Event();checked=[]
    class Checker:
     def check(self,*args):checked.append(True);return dict(aligned=True)
@@ -66,7 +66,9 @@ class GeneratedSections(unittest.TestCase):
    self.assertFalse((folder/'part-000.mp3').exists())
  def test_joined_hash_and_order_cover_every_sentence(self):
   with tempfile.TemporaryDirectory() as directory:
-   folder=Path(directory);text='The blue lantern glowed. The river was quiet. The keeper came home.'
+   folder=Path(directory);text=('The blue lantern glowed beside the old window. '
+                               'The river was quiet under the midnight sky. '
+                               'The keeper came home just before the rain.')
    (folder/'source.md').write_text(text)
    def render(folder,part,*args):
     data=bytes([part['index']+1])*144;(folder/('part-%03d.mp3'%part['index'])).write_bytes(data)
@@ -77,5 +79,13 @@ class GeneratedSections(unittest.TestCase):
    self.assertEqual(audio,b'\1'*144+b'\2'*144+b'\3'*144)
    self.assertEqual(result['state'],'complete');self.assertEqual(result['ready_sections'],3)
    self.assertEqual(result['audio_sha256'],hashlib.sha256(audio).hexdigest())
+ def test_short_dialogue_shares_a_section_without_dropping_words(self):
+  spoken=SpeechText('"Wait." "Why?" "Listen." The hallway fell silent as the lights went out. "Run."')
+  old=sections.plan_sections(spoken,minimum_words=1)
+  grouped=sections.plan_sections(spoken)
+  self.assertLess(len(grouped),len(old))
+  self.assertGreaterEqual(min(part['word_count'] for part in grouped),7)
+  self.assertEqual(sum(part['word_count'] for part in grouped),len(spoken.words))
+  self.assertTrue(grouped[-1]['sentence_end'])
 
 if __name__=='__main__':unittest.main()

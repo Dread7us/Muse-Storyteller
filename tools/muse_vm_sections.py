@@ -4,25 +4,38 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from muse_vm_tts_job import atomic_json,read_source,SPEEDS,MAX_AUDIO,terminate
 
-def plan_sections(spoken,target=190,maximum_words=36):
-    """Keep sentence boundaries; mark pieces of unusually long sentences."""
+def plan_sections(spoken,target=190,maximum_words=36,minimum_words=7):
+    """Keep complete sentences together and avoid synthesizing tiny fragments."""
     words=spoken.words
     if not words:raise ValueError('Narration needs spoken words')
-    result=[];start=0;sentence=0
+    groups=[];start=0
     while start<len(words):
         stop=start+1
         while stop<len(words) and not re.search(r'[.!?]["”’\']?$',words[stop-1][4]):
             stop+=1
-        # A sentence is prepared completely before any of its pieces play.
+        if groups:
+            previous,end=groups[-1]
+            fits=stop-previous<=maximum_words and words[stop-1][1]-words[previous][0]<=target
+            if end-previous<minimum_words or (stop-start<minimum_words and (fits or stop==len(words))):
+                groups[-1]=(previous,stop)
+            else:
+                groups.append((start,stop))
+        else:
+            groups.append((start,stop))
+        start=stop
+    result=[]
+    for sentence,(start,stop) in enumerate(groups):
+        # Do not begin playing this group until all its pieces are ready.
         at=start
         while at<stop:
             end=min(stop,at+maximum_words)
             while end>at+1 and words[end-1][1]-words[at][0]>target:end-=1
+            if 0<stop-end<minimum_words and end-at>minimum_words:
+                end=max(at+minimum_words,stop-minimum_words)
             result.append(dict(index=len(result),word_start=at,word_count=end-at,
                                sentence=sentence,sentence_end=end==stop,
                                spoken_sha256=hashlib.sha256(spoken.text[words[at][0]:words[end-1][1]].encode()).hexdigest()))
             at=end
-        start=stop;sentence+=1
     if len(result)>128:raise ValueError('Narration needs too many sections')
     return result
 
@@ -38,7 +51,8 @@ def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
         try:
             remaining=min(45,max(.1,deadline-time.monotonic()))
             with original.open('wb') as output:
-                process=subprocess.Popen([str(executable),'speak','--text',text,'--voice',voice,
+                spoken_text=text if attempt==0 else text.strip('"“”')
+                process=subprocess.Popen([str(executable),'speak','--text',spoken_text,'--voice',voice,
                     '--language','en','--speed',str(SPEEDS[speed]),'--stream'],
                     stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.DEVNULL,start_new_session=True)
                 if process.wait(timeout=remaining)!=0:raise RuntimeError('Section synthesis failed')

@@ -40,7 +40,7 @@ class SeriesTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.store=native.Store(self.tmp.name)
   self.store.warm=lambda:self.fail('Section playback must not run a model on the Module')
   self.text='The blue lantern glowed. The keeper came home. The river was quiet.'
-  self.spoken=SpeechText(self.text);self.parts=plan_sections(self.spoken);self.key='1234567890abcdef12345678'
+  self.spoken=SpeechText(self.text);self.parts=plan_sections(self.spoken,minimum_words=1);self.key='1234567890abcdef12345678'
   self.plan=dict(version=2,source_sha256=hashlib.sha256(self.text.encode()).hexdigest(),sections=self.parts)
   class Decoder:
    returncode=None
