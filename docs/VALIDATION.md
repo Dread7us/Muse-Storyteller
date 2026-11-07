@@ -533,3 +533,39 @@ Pause/Resume and Stop passed again. Aria, 60% volume and the native network conn
 were retained. Final read-only checks matched every deployed Module runtime source,
 preserved all 382 original archived messages and passed database integrity. Recorder
 and playback were idle, both USB devices were connected and SuperDisplay was running.
+
+## Editions 0.5.2–0.5.3 Resume repair
+
+A deterministic playback test reproduced a missing unpaused acknowledgment when
+Pause landed at the exact end of a PCM block. That path now acknowledges Resume
+before returning to the sentence player. The Core2 acknowledgment handler also
+retains Buffering when the next sentence is not yet available.
+
+The first physical long-pause test exposed an additional failure: while audio was
+paused, checked upload replies stopped arriving and Resume remained requested but
+unacknowledged. The existing ASCII framing repair was prohibited during playback,
+including acknowledged pauses. Edition 0.5.3 permits that bounded delimiter repair
+while paused and adds at most two repair attempts for a stuck Resume transition.
+It preserves the session, audio position and checked cache. Recorder activity,
+listening/cancellation states and queued user commands remain protected.
+
+Both application-only writes passed readback and boot checks. In the final cold-cache
+test, speech began while later sections were still transferring. Audio was paused
+for 65.57 seconds; the native speaker reported stopped and the highlight stayed at
+the same word. All 22 sections and 577,008 MP3 bytes finished transferring during
+that pause. Resume cleared the pending state in 1.56 seconds, the native speaker
+reported running and highlighting advanced from the paused position. Another
+Pause/Resume, Sound access, temporary volume adjustment, Stop and Restart passed.
+The device returned to Ready with Aria and 60% volume.
+
+The passing run retried rejected damaged blocks but did not need a delimiter
+repair. Attempt limits, cooldown, acknowledged-pause admission and Recorder/queued
+command protection are covered by the production-code host tests; this is not a
+claim that every source of physical serial corruption has been eliminated.
+The Linux suite passed all 150 tests. The Windows run passed 91 with 21 platform
+skips. The playback boundary regression also passed on the actual Module.
+Final source checks matched the deployed Module files. All 393 messages present
+before this repair, including the earlier 382-message baseline, were preserved;
+database integrity passed. The devices returned to idle and SuperDisplay remained
+running on its existing USB server. No pairing/Wi-Fi erase or tablet routing change
+was performed. Private test reports and cache backups remain outside the repository.
