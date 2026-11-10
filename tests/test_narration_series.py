@@ -1,4 +1,4 @@
-import base64,hashlib,io,json,sys,tempfile,threading,time,types,unittest
+import base64,hashlib,io,json,struct,sys,tempfile,threading,time,types,unittest
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
@@ -8,6 +8,7 @@ from muse_narration_series import checked_plan,aligned_schedule,SeriesError
 from muse_vm_sections import plan_sections
 from muse_vm_speech_check import repeated_speech
 from muse_speech_text import SpeechText
+from muse_voice_backend import scale_pcm
 
 class Plans(unittest.TestCase):
  def test_all_words_and_number_pronunciation_are_preserved(self):
@@ -40,7 +41,7 @@ class SeriesTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.store=native.Store(self.tmp.name)
   self.store.warm=lambda:self.fail('Section playback must not run a model on the Module')
   self.text='The blue lantern glowed. The keeper came home. The river was quiet.'
-  self.spoken=SpeechText(self.text);self.parts=plan_sections(self.spoken);self.key='1234567890abcdef12345678'
+  self.spoken=SpeechText(self.text);self.parts=plan_sections(self.spoken,minimum_words=1);self.key='1234567890abcdef12345678'
   self.plan=dict(version=2,source_sha256=hashlib.sha256(self.text.encode()).hexdigest(),sections=self.parts)
   class Decoder:
    returncode=None
@@ -52,7 +53,7 @@ class SeriesTests(unittest.TestCase):
   class FakeItem:
    def __init__(self,root,key,text,session):
     self.key,self.text,self.session=key,text,session;self.folder=root/key;self.folder.mkdir()
-    self.mp3=self.folder/'voice.mp3';self.pcm=self.folder/'voice.pcm';self.pcm.write_bytes(b'\0\0'*(16000*6))
+    self.mp3=self.folder/'voice.mp3';self.pcm=self.folder/'voice.pcm';self.pcm.write_bytes(struct.pack('<h',6000)*(16000*6))
     self.file=self.mp3.open('wb');self.decoder=Decoder();self.received=0;self.digest=hashlib.sha256();self.done=False;self.error=None
    def size(self):return self.pcm.stat().st_size
    def abort(self):
@@ -60,11 +61,9 @@ class SeriesTests(unittest.TestCase):
     if not self.file.closed:self.file.close()
     if not self.decoder.stdin.closed:self.decoder.stdin.close()
   self.patch=patch.object(native,'Item',FakeItem);self.patch.start()
-  self.modules=patch.dict(sys.modules,{'muse_voice_backend':types.SimpleNamespace(check_cancel=lambda cancel:(_ for _ in ()).throw(RuntimeError('cancelled')) if cancel and cancel.is_set() else None)})
-  self.modules.start()
   self.request('series_begin',text=self.text,plan=self.plan)
  def tearDown(self):
-  self.store.close();self.patch.stop();self.modules.stop();self.tmp.cleanup()
+  self.store.close();self.patch.stop();self.tmp.cleanup()
  def request(self,op,**data):return self.store.request(dict(op=op,key=self.key,_transport_verified=True,**data),'12345678')
  def upload(self,index,bad_words=False):
   data=(bytes((index+1,))*144);sha=hashlib.sha256(data).hexdigest();part=self.parts[index]
@@ -122,6 +121,76 @@ class SeriesTests(unittest.TestCase):
   self.upload(0);size=self.store.series[self.key].items[0].size()
   self.assertEqual(self.request('part_end')['received'],144)
   self.assertEqual(self.store.series[self.key].items[0].size(),size)
+ def test_interrupted_transfer_preserves_checked_sections_and_partial_bytes(self):
+  self.upload(0)
+  raw=bytes([2])*144;sha=hashlib.sha256(raw).hexdigest();part=self.parts[1]
+  self.request('part_begin',index=1,bytes=len(raw),sha256=sha)
+  def block(offset,body):
+   return self.request('chunk',offset=offset,bytes=len(body),sha256=hashlib.sha256(body).hexdigest(),audio=base64.b64encode(body).decode())
+  block(0,raw[:72])
+  status=self.request('series_begin',text=self.text,plan=self.plan)
+  self.assertEqual((status['ready_sections'],status['prefix_bytes'],status['received']),(1,144,216))
+  self.assertEqual(self.request('part_begin',index=1,bytes=len(raw),sha256=sha,resume=True)['received'],72)
+  self.assertEqual(block(0,raw[:72])['received'],72)
+  self.assertEqual(block(72,raw[72:])['received'],144)
+  rows=[[j*.4,j*.4+.3,part['word_start']+j] for j in range(part['word_count'])]
+  self.assertTrue(self.request('part_end',pcm_samples=96000,aligned=True,words=rows)['ready'])
+  self.upload(2)
+  self.assertTrue(self.seal()['complete'])
+ def test_terminal_error_drains_already_checked_sentences(self):
+  self.upload(0);self.upload(1)
+  self.request('series_abort')
+  played=[]
+  class Player:
+   mic=None
+   def play(p,pcm,volume,cancel):played.append(len(pcm))
+  with self.assertRaisesRegex(native.NativeAudioError,'transfer stopped'):
+   self.store.play(Player(),self.key,self.text,60,threading.Event(),None)
+  self.assertEqual(sum(played),384000)
+ def test_offline_section_keeps_surrounding_aria_and_can_be_replayed(self):
+  self.upload(0)
+  synthesized=[]
+  def synthesize(phrase,cancel,check,speed):
+   synthesized.append((phrase,speed))
+   return struct.pack('<h',24000)*96000
+  with patch.dict(sys.modules,{'muse_piper':types.SimpleNamespace(synthesize=synthesize)}):
+   status=self.request('part_offline',index=1,speed='normal')
+   self.request('part_offline',index=1,speed='normal')
+  self.assertEqual(len(synthesized),1)
+  self.assertEqual((status['ready_sections'],status['prefix_bytes'],status['offline_sections']),(2,144,1))
+  with self.assertRaisesRegex(native.NativeAudioError,'omitted'):
+   self.request('series_end_mixed')
+  self.upload(2)
+  self.assertTrue(self.request('series_end_mixed')['complete'])
+  fresh=native.Store(self.tmp.name);played=[];sources=[];levels=[]
+  class Player:
+   mic=None
+   narration_source_callback=staticmethod(sources.append)
+   def play(p,pcm,volume,cancel):
+    played.append(len(pcm));levels.append(struct.unpack_from('<h',scale_pcm(pcm,volume))[0])
+  try:result=fresh.play(Player(),self.key,self.text,80,threading.Event(),None)
+  finally:fresh.close()
+  self.assertTrue(result['complete']);self.assertEqual(result['offline_sections'],1)
+  self.assertEqual(sources,[False,True,False])
+  self.assertEqual(sum(played),576000)
+  self.assertEqual(levels,[4800,4800,4800])
+ def test_online_and_offline_in_one_sentence_are_scaled_separately(self):
+  self.key='2345678901abcdef12345678'
+  self.parts=[dict(self.parts[0],sentence_end=False),dict(self.parts[1],sentence=0),dict(self.parts[2],sentence=1)]
+  self.request('series_begin',text=self.text,plan=dict(self.plan,sections=self.parts))
+  self.upload(0)
+  offline=struct.pack('<h',24000)*96000
+  with patch.dict(sys.modules,{'muse_piper':types.SimpleNamespace(synthesize=lambda *args:offline)}):
+   self.request('part_offline',index=1,speed='normal')
+  self.upload(2);self.request('series_end_mixed')
+  blocks=[]
+  class Player:
+   mic=None
+   def play(p,pcm,volume,cancel):blocks.append(scale_pcm(pcm,volume))
+  self.store.play(Player(),self.key,self.text,80,None,None)
+  level=struct.pack('<h',4800)
+  self.assertEqual(blocks,[level*192000,level*96000])
+  self.assertEqual(self.store.series[self.key].items[1].pcm.read_bytes(),offline)
  def test_nan_or_nonmonotonic_word_timing_is_rejected(self):
   part=self.parts[0];rows=[[j*.4,j*.4+.3,j] for j in range(part['word_count'])]
   for changed in [dict(aligned=False,words=rows),dict(aligned=True,words=[[float('nan'),.3,0]]+rows[1:]),dict(aligned=True,words=rows[::-1])]:

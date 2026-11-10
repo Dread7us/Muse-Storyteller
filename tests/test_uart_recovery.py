@@ -6,6 +6,7 @@ def harness():
     source=(ROOT/'firmware/overlay/esp32/components/muse/muse_module_llm.c').read_text()
     send=source[source.index('bool muse_module_llm_send_line('):source.index('void muse_module_llm_session(')]
     safe=source[source.index('static const char *uart_safe_json('):source.index('bool muse_module_llm_send_line(')]
+    repair=source[source.index('static void recover_ascii_framing('):source.index('static uint32_t s_play_generation')]
     deadline=source[source.index('static void check_deadline('):source.index('static void runtime_task(')]
     policy=source[source.index('static bool transfer_recovery_allowed('):source.index('static void check_deadline(')]
     return r'''
@@ -34,7 +35,7 @@ static void set_playback(int){}
 #define MUSE_MODULE_LLM_PLAYBACK_FAILED 10
 static void cancel_operation(runtime_t*,bool){cancelled++;}
 ''' + policy + deadline + r'''
-static bool s_tx_mutex=true;static std::string wire;static std::vector<size_t> bursts;static int waits=0,fail_write=-1;
+static bool s_tx_mutex=true;static std::string wire;static std::vector<size_t> bursts;static std::vector<int> delays;static int waits=0,fail_write=-1;
 #define portMAX_DELAY 0
 #define CONFIG_MUSE_MODULE_LLM_UART_NUM 1
 #define ESP_OK 0
@@ -43,11 +44,11 @@ static void xSemaphoreTake(bool,int){}
 static void xSemaphoreGive(bool){}
 static int uart_write_bytes(int,const char *s,size_t n){bursts.push_back(n);if((int)bursts.size()==fail_write)return -1;wire.append(s,n);return (int)n;}
 static int uart_wait_tx_done(int,int){waits++;return ESP_OK;}
-static void vTaskDelay(int){}
+static void vTaskDelay(int ticks){delays.push_back(ticks);}
 #define MALLOC_CAP_SPIRAM 1
 #define MALLOC_CAP_8BIT 2
 static char *heap_caps_malloc(size_t n,int){return (char*)malloc(n);}
-''' + safe + send + r'''
+''' + safe + send + repair + r'''
 int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];runtime_t r;r.deadline=100;r.operation=OP_HELLO;
  if(c=="hello"){check_deadline(&r,100);assert(recovered==1&&r.framing_recoveries==1&&!s_ready&&r.retry_at>100);}
  else if(c=="status"){r.operation=OP_STATUS;check_deadline(&r,100);assert(!recovered&&!s_ready);}
@@ -61,10 +62,11 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];runtime_t r
  else if(c=="early"){check_deadline(&r,99);assert(!recovered&&r.operation==OP_HELLO&&s_ready);}
  else if(c=="transfer_policy"){assert(transfer_recovery_allowed(OP_NONE,false,false)&&transfer_recovery_allowed(OP_STATUS,false,false));assert(!transfer_recovery_allowed(OP_NONE,true,false)&&!transfer_recovery_allowed(OP_SPEAK,false,false)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false,false)&&!transfer_recovery_allowed(OP_LISTEN,false,false));}
  else if(c=="transfer_recorder"){protected_recorder=true;assert(!transfer_recovery_allowed(OP_NONE,false,false)&&!transfer_recovery_allowed(OP_HELLO,false,false)&&!transfer_recovery_allowed(OP_SPEAK,false,true));}
- else if(c=="paused_transfer"){assert(transfer_recovery_allowed(OP_SPEAK,false,true));assert(!transfer_recovery_allowed(OP_SPEAK,true,true));}
+ else if(c=="active_transfer"){assert(transfer_recovery_allowed(OP_SPEAK,false,true));assert(!transfer_recovery_allowed(OP_SPEAK,true,true));}
  else if(c=="listening_protected"){assert(!transfer_recovery_allowed(OP_LISTEN,false,true)&&!transfer_recovery_allowed(OP_LISTEN_BEGIN,false,true)&&!transfer_recovery_allowed(OP_LISTEN_END,false,true)&&!transfer_recovery_allowed(OP_CANCEL,false,true));}
  else if(c=="pacing"){for(size_t n:{2,147,179,900,1024,5000}){wire.clear();bursts.clear();waits=0;std::string payload(n,'a');assert(muse_module_llm_send_line(payload.c_str()));assert(wire==payload+"\n");assert(*std::max_element(bursts.begin(),bursts.end())<=128);assert(waits==(int)((n+127)/128));}}
  else if(c=="write_failure"){fail_write=2;std::string payload(900,'a');assert(!muse_module_llm_send_line(payload.c_str()));assert(wire.size()==128&&bursts.size()==2);}
+ else if(c=="framing_flush"){recover_ascii_framing();assert(wire=="}}}}}}}}\n"&&waits==2);assert((bursts==std::vector<size_t>{8,1}));assert((delays==std::vector<int>{20,20}));}
  else if(c=="brace_roundtrip"){std::string payload=R"({"data":{"text":"An unmatched { and escaped \"quote\" and a literal backslash \\{."}})";assert(muse_module_llm_send_line(payload.c_str()));std::cout<<wire;}
  else assert(false);
 }
@@ -91,10 +93,11 @@ class UartRecovery(unittest.TestCase):
     def test_no_recovery_before_deadline(self):self.case('early')
     def test_transfer_recovery_yields_to_capture_and_queued_commands(self):self.case('transfer_policy')
     def test_transfer_recovery_protects_recorder(self):self.case('transfer_recorder')
-    def test_acknowledged_pause_allows_ascii_transfer_repair(self):self.case('paused_transfer')
-    def test_pause_flag_cannot_allow_repair_during_capture_or_cancellation(self):self.case('listening_protected')
+    def test_native_playback_allows_ascii_transfer_repair(self):self.case('active_transfer')
+    def test_native_playback_flag_cannot_allow_repair_during_capture_or_cancellation(self):self.case('listening_protected')
     def test_small_and_large_json_are_paced_without_byte_changes(self):self.case('pacing')
     def test_failed_write_stops_before_next_frame(self):self.case('write_failure')
+    def test_recovery_flushes_whitespace_in_a_separate_write(self):self.case('framing_flush')
     def test_json_string_braces_round_trip_without_vendor_nesting(self):
         result=subprocess.run([str(self.exe),'brace_roundtrip'],check=True,capture_output=True,text=True)
         self.assertEqual(json.loads(result.stdout)['data']['text'],r'An unmatched { and escaped "quote" and a literal backslash \{.')

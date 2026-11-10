@@ -1687,6 +1687,24 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+#if CONFIG_MUSE_MODULE_LLM
+static void honor_offline_voice_selection()
+{
+    if (s_bench_reply || muse_settings_voice_source() != 0 ||
+        (!s_turn.native_job[0] && !s_turn.native_direct)) {
+        return;
+    }
+    // Keep the reply text and any archive entry. Only release the remote
+    // narration route so the same reply can be spoken through Piper.
+    muse_native_voice_cancel();
+    s_turn.native_job[0] = 0;
+    s_turn.native_direct = s_turn.native_started = s_turn.native_claimed = false;
+    for (int i = 0; i < s_turn.nmsgs; ++i) {
+        s_turn.msgs[i].external_key[0] = 0;
+    }
+}
+#endif
+
 static void start_tts(void)
 {
 #if CONFIG_MUSE_MODULE_LLM
@@ -1695,6 +1713,9 @@ static void start_tts(void)
     if (s_turn.tts_msg >= 0) {
         return;
     }
+#if CONFIG_MUSE_MODULE_LLM
+    honor_offline_voice_selection();
+#endif
     for (int i = 0; i < s_turn.nmsgs; i++) {
         msg_t &m = s_turn.msgs[i];
         if (m.tts != TTS_QUEUED) {
@@ -1866,7 +1887,7 @@ static void decode(void)
     }
     muse_module_llm_playback_t playback = muse_module_llm_playback(s_turn.gen);
     if (playback == MUSE_MODULE_LLM_PLAYBACK_FAILED || playback == MUSE_MODULE_LLM_PLAYBACK_NONE) {
-        turn_fail("LOCAL VOICE FAILED");
+        turn_fail(s_turn.msgs[s_turn.tts_msg].external_key[0] ? "MUSE AUDIO INTERRUPTED" : "LOCAL VOICE FAILED");
         return;
     }
     if (playback == MUSE_MODULE_LLM_PLAYBACK_DONE) {
@@ -2413,6 +2434,9 @@ static void local_device_reply(muse_device_command_t action)
 static void restart_reply(void)
 {
     if(!s_can_restart || !s_turn.texts || s_turn.text){s_transport_pending=false;return;}
+#if CONFIG_MUSE_MODULE_LLM
+    honor_offline_voice_selection();
+#endif
     uint32_t previous=s_turn.gen;
     muse_module_llm_cancel(s_turn.gen);drain_out();s_turn.gen=++s_gen;s_turn.phase=P_WAIT_REPLY;s_turn.tts_msg=-1;s_turn.pcm_out=0;s_turn.silent=false;s_turn.mp3_len=0;s_turn.playback_paused_us=s_turn.playback_pause_check=0;
     s_turn.start_us=s_turn.last_event_us=s_turn.last_content_us=s_turn.chat_us=now_us();s_reply_shown[0]=0;

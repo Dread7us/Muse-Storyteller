@@ -774,7 +774,7 @@ static bool console_command(char *line, bool whole)
 #if CONFIG_MUSE_MODULE_LLM
     if (!strcmp(line, "usage.status")) {
         muse_usage_view_t u={0};bool valid=muse_memory_usage_copy(&u);
-        printf("@usage {\"valid\":%s,\"used\":%u,\"observed\":%u,\"age\":%u,\"learned\":%s,\"pending\":%s,\"reset\":\"%s\",\"checked\":\"%s\"}\n",valid?"true":"false",u.used,u.observed,u.age,u.learned?"true":"false",u.pending?"true":"false",u.reset,u.checked);fflush(stdout);return true;
+        printf("@usage {\"valid\":%s,\"used\":%u,\"observed\":%u,\"age\":%u,\"learned\":%s,\"pending\":%s,\"reset\":\"%s\",\"checked\":\"%s\",\"refresh\":\"%s\",\"note\":\"%s\",\"last_sync\":\"%s\"}\n",valid?"true":"false",u.used,u.observed,u.age,u.learned?"true":"false",u.pending?"true":"false",u.reset,u.checked,u.refresh_state,u.refresh_note,u.last_sync);fflush(stdout);return true;
     }
     if (!strcmp(line, "memory.status")) {
         muse_memory_view_t v={0};char *text=heap_caps_calloc(1,8192,MUSE_BIG_CAPS);
@@ -805,7 +805,9 @@ static bool console_command(char *line, bool whole)
         printf("@weather {\"valid\":%s,\"busy\":%s,\"temperature_f\":%.1f,\"wind_mph\":%.1f,\"age_seconds\":%lu,\"time\":\"%s\",\"note\":\"%s\"}\n",w.valid?"true":"false",w.busy?"true":"false",w.temperature,w.wind,(unsigned long)w.age_seconds,w.time,w.note);fflush(stdout);return true;
     }
     if(!strcmp(line,"device.readerstate")){uint32_t version=0;unsigned count=0;size_t bytes=0;muse_conversation_diagnostic(&version,&count,&bytes);printf("@conversation_model {\"version\":%lu,\"count\":%u,\"bytes\":%u}\n",(unsigned long)version,count,(unsigned)bytes);fflush(stdout);return true;}
-    if(!strcmp(line,"device.uart_recovery_test")){printf("@uart_recovery_test {\"queued\":%s}\n",muse_module_llm_test_framing_stall()?"true":"false");fflush(stdout);return true;}
+    if(!strcmp(line,"device.uart_recovery_test")||!strcmp(line,"device.uart_recovery_test=active")){
+        printf("@uart_recovery_test {\"queued\":%s}\n",muse_module_llm_test_framing_stall(strchr(line,'=')!=NULL)?"true":"false");fflush(stdout);return true;
+    }
     if(!strcmp(line,"device.cleartest")){muse_chat_clear_bench();return true;}
     if(!strncmp(line,"device.nativefixture=",21)){muse_chat_native_fixture_key(line+21);return true;}
     if(!strncmp(line,"device.ariafixture=",19)){printf("@aria_fixture {\"queued\":%s}\n",muse_chat_native_fixture_voice_key(line+19,1)?"true":"false");fflush(stdout);return true;}
@@ -821,10 +823,11 @@ static bool console_command(char *line, bool whole)
         muse_module_llm_status_t state;
         muse_module_llm_status(&state);
         unsigned baud,op,age,rx;muse_module_llm_diagnostic(&baud,&op,&age,&rx);printf("@uart {\"baud\":%u,\"op\":%u,\"age_ms\":%u,\"rx\":%u}\n",baud,op,age,rx);
-        muse_native_voice_status_t native;muse_native_voice_status(&native);printf("@native_voice {\"phase\":%u,\"received\":%u,\"total\":%u,\"elapsed_ms\":%u,\"error\":%u,\"recoveries\":%u,\"active\":%s,\"job\":\"%s\"}\n",native.phase,native.received,native.total,native.elapsed_ms,native.error,native.recoveries,native.active?"true":"false",native.job);
-        printf("@voice {\"state\":%d,\"mic_active\":%s,\"mic_db\":%.1f,\"issued_generations\":%lu,\"last_error\":%d,\"frame_ms\":%d}\n",
+        muse_native_voice_status_t native;muse_native_voice_status(&native);printf("@native_voice {\"phase\":%u,\"received\":%u,\"total\":%u,\"elapsed_ms\":%u,\"error\":%u,\"recoveries\":%u,\"sections_ready\":%u,\"sections_total\":%u,\"section_detail\":%u,\"active\":%s,\"job\":\"%s\"}\n",native.phase,native.received,native.total,native.elapsed_ms,native.error,native.recoveries,native.sections_ready,native.sections_total,native.detail,native.active?"true":"false",native.job);
+        printf("@voice {\"state\":%d,\"mic_active\":%s,\"mic_db\":%.1f,\"issued_generations\":%lu,\"last_error\":%d,\"frame_ms\":%d,\"offline_line\":%s}\n",
                state.state, state.mic_active ? "true" : "false", (double)state.mic_db,
-               (unsigned long)state.issued_generations, state.last_error, muse_board->frame_ms);
+               (unsigned long)state.issued_generations, state.last_error, muse_board->frame_ms,
+               state.state==MUSE_MODULE_LLM_SPEAKING&&state.offline_line?"true":"false");
         muse_ui_reader_diag_t ui;muse_ui_reader_diagnostic(&ui);
         printf("@display {\"event\":%lu,\"age_ms\":%lu}\n",(unsigned long)ui.display_event,(unsigned long)ui.display_event_age_ms);
         printf("@reader {\"frames\":%lu,\"phase\":%lu,\"age_ms\":%lu,\"chars\":%lu,\"fallbacks\":%lu,\"word_version\":%lu,\"word_start\":%u,\"word_end\":%u}\n",(unsigned long)ui.frames,(unsigned long)ui.phase,(unsigned long)ui.age_ms,(unsigned long)ui.chars,(unsigned long)ui.layout_fallbacks,(unsigned long)state.word_version,state.word_start,state.word_end);

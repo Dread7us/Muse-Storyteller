@@ -27,16 +27,31 @@ class SpeechCheck:
         duration=len(audio)/16000.
         if not .2<duration<=29:raise ValueError('Speech section exceeds its alignment window')
         with self.lock:
+            expected=lexical(text)
+            def recognize(samples,beam):
+                segments,_=self.model.transcribe(samples,language='en',beam_size=beam,condition_on_previous_text=False,
+                    temperature=0,vad_filter=False,word_timestamps=False)
+                return SpeechText(' '.join(segment.text.strip() for segment in segments)).text
             # Recognition checks what the generator actually said. Alignment
             # alone must not force unrelated or looping audio onto the script.
+            original_repeated=False
             for beam in (1,3):
-                segments,_=self.model.transcribe(audio,language='en',beam_size=beam,condition_on_previous_text=False,
-                    temperature=0,vad_filter=False,word_timestamps=False)
-                heard=' '.join(segment.text.strip() for segment in segments)
-                normalized_heard=SpeechText(heard).text
-                agreement=difflib.SequenceMatcher(None,lexical(text),lexical(normalized_heard),autojunk=False).ratio()
-                wrong=repeated_speech(text,normalized_heard) or agreement<.55
+                normalized_heard=recognize(audio,beam)
+                agreement=difflib.SequenceMatcher(None,expected,lexical(normalized_heard),autojunk=False).ratio()
+                repeats=repeated_speech(text,normalized_heard)
+                original_repeated|=repeats
+                wrong=repeats or agreement<.55
                 if not wrong:break
+            if wrong and not original_repeated and 1<=len(expected)<=4 and duration<=3:
+                # Whisper sometimes drops a single isolated word. Recheck
+                # copies of the actual waveform, and require exact recognition
+                # of at least two copies. Only the original clip is delivered.
+                quiet=np.zeros(4800,dtype=np.float32)
+                repeated=np.concatenate((quiet,audio,quiet,audio,quiet,audio,quiet))
+                for beam in (1,3):
+                    heard=lexical(recognize(repeated,beam))
+                    if heard==expected*2 or heard==expected*3:
+                        wrong=False;agreement=1.;break
             if wrong:raise ValueError('Generated speech differs from its text')
             words,confidence=self.acoustic.align(audio,text,first_word)
             return dict(aligned=True,words=words,agreement=round(agreement,4),pcm_samples=len(audio),

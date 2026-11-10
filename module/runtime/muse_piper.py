@@ -181,7 +181,7 @@ def speak(backend,text,volume,cancel,on_play,check_cancel):
         for start in range(0,len(pcm),MAX_PCM):
             end=min(len(pcm),start+MAX_PCM);base=start/32000
             backend.word_schedule=[(t-base,a,b) for t,a,b in schedule if base<=t<end/32000]
-            backend.play(pcm[start:end],volume,cancel)
+            backend.play(pcm[start:end],volume,cancel,offline=True)
         return len(pcm)
     try:
         while needs_buffer():

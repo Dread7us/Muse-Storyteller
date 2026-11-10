@@ -25,7 +25,7 @@ muse_wait_view_t muse_wait_countdown(muse_wait_countdown_t *s,float elapsed,floa
     if(fraction<s->remaining_percent)s->remaining_percent=fraction;
     s->late=elapsed>=budget;
     if(ready){s->remaining_percent=0;s->late=false;}
-    return (muse_wait_view_t){(unsigned)ceilf(s->remaining_percent),
+    return (muse_wait_view_t){100u-(unsigned)ceilf(s->remaining_percent),
         ready||s->late?0:(unsigned)ceilf(fmaxf(0,budget-elapsed)),s->late};
 }
 void muse_wait_learn(muse_wait_model_t *m,float response,float prep,unsigned words){

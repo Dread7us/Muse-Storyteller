@@ -37,12 +37,12 @@ static void expired(lv_timer_t *timer){
     muse_module_llm_status_t st;muse_module_llm_status(&st);
     bool ready=st.state==MUSE_MODULE_LLM_READY;
     muse_wait_model_t *model=muse_wait_model();
-    muse_wait_view_t remaining=muse_wait_countdown(&s_countdown,elapsed/1000.f,model->boot_s,ready);
-    if(s_glow){lv_obj_set_x(s_glow,0);lv_obj_set_width(s_glow,remaining.percent*lv_obj_get_width(s_track)/100);}
+    muse_wait_view_t view=muse_wait_countdown(&s_countdown,elapsed/1000.f,model->boot_s,ready);
+    if(s_glow)lv_obj_set_width(s_glow,view.progress_percent*lv_obj_get_width(s_track)/100);
     if(s_loading&&!s_preview){
-        char text[80];if(ready)strlcpy(text,"Voice and microphone ready | 0% left",sizeof(text));
-        else if(remaining.late)snprintf(text,sizeof(text),"Still starting voice | %us elapsed",(unsigned)(elapsed/1000));
-        else snprintf(text,sizeof(text),"Starting voice | ~%us | %u%% left*",remaining.seconds,remaining.percent);
+        char text[80];if(ready)strlcpy(text,"Voice and mic ready | 100%",sizeof(text));
+        else if(view.late)snprintf(text,sizeof(text),"Still starting | %u%%* | %us elapsed",view.progress_percent,(unsigned)(elapsed/1000));
+        else snprintf(text,sizeof(text),"Starting voice | %u%%* | ~%us",view.progress_percent,view.seconds);
         if(strcmp(lv_label_get_text(s_loading),text))lv_label_set_text(s_loading,text);
     }
     if(ready&&!s_ready_at){s_ready_at=lv_tick_get();if(!s_preview&&elapsed>=2000&&elapsed<=90000){model->boot_s=.8f*model->boot_s+.2f*(elapsed/1000.f);muse_wait_save();}}
@@ -84,12 +84,12 @@ void muse_startup_show(bool preview){
     s_loading=lv_label_create(s_cover);lv_obj_set_width(s_loading,lv_pct(100));
     lv_obj_set_style_text_align(s_loading,LV_TEXT_ALIGN_CENTER,0);lv_obj_set_style_text_font(s_loading,&lv_font_montserrat_14,0);
     lv_obj_set_style_text_color(s_loading,lv_color_hex(0x80e0c8),0);lv_obj_set_y(s_loading,190);
-    lv_label_set_text(s_loading,preview?"LOCAL VOICE. CONNECTED STORIES.":"Loading voice and microphone...");
+    lv_label_set_text(s_loading,preview?"LOCAL VOICE. CONNECTED STORIES.":"Starting voice | 0%*");
     s_track=lv_obj_create(s_cover);lv_obj_remove_style_all(s_track);lv_obj_set_size(s_track,288,23);lv_obj_align(s_track,LV_ALIGN_TOP_MID,0,190);
     lv_obj_set_style_radius(s_track,6,0);lv_obj_set_style_clip_corner(s_track,true,0);lv_obj_set_style_bg_color(s_track,lv_color_hex(0x21152e),0);lv_obj_set_style_bg_opa(s_track,255,0);
     lv_obj_set_style_border_width(s_track,1,0);lv_obj_set_style_border_color(s_track,lv_color_hex(0x9f7bcf),0);
     lv_obj_remove_flag(s_track,LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
-    s_glow=lv_obj_create(s_track);lv_obj_remove_style_all(s_glow);lv_obj_set_size(s_glow,288,23);lv_obj_set_style_radius(s_glow,6,0);
+    s_glow=lv_obj_create(s_track);lv_obj_remove_style_all(s_glow);lv_obj_set_size(s_glow,0,23);lv_obj_set_style_radius(s_glow,6,0);
     lv_obj_set_style_bg_color(s_glow,lv_color_hex(0x51336e),0);lv_obj_set_style_bg_opa(s_glow,255,0);lv_obj_remove_flag(s_glow,LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_parent(s_loading,s_track);lv_obj_set_pos(s_loading,3,3);lv_obj_set_width(s_loading,282);lv_label_set_long_mode(s_loading,LV_LABEL_LONG_MODE_DOTS);lv_obj_set_style_text_color(s_loading,lv_color_hex(0xf7f0ff),0);lv_obj_move_foreground(s_loading);
     s_timer=lv_timer_create(expired,40,NULL);

@@ -92,12 +92,16 @@ static const page_t SOUND,WEATHER,COMMANDS;
 static lv_obj_t *s_recorder_page,*s_recorder_list,*s_rec_status,*s_rec_note,*s_rec_start,*s_rec_stop,*s_rec_continue,*s_rec_read,*s_rec_audio_row,*s_rec_audio_sw,*s_rec_text,*s_rec_page_label,*s_rec_prevpage,*s_rec_nextpage,*s_rec_older,*s_rec_newer,*s_rec_original_button,*s_rec_nav,*s_rec_sleep_sw,*s_home_recorder;
 static bool s_rec_audio_choice=true,s_rec_reading,s_rec_scroll_pending,s_rec_original;
 static int64_t s_rec_poll_at;
-static const page_t RECORDER,STARTUP;
+static const page_t RECORDER,STARTUP,SD;
 static lv_obj_t *s_startup_sw,*s_home_startup;
 static void build_recorder_page(lv_obj_t *tile);
 static void tick_recorder(void);
 static lv_obj_t *s_rec_progress,*s_rec_progress_text;
 static int64_t s_rec_complete_at;
+static lv_obj_t *s_sd_page,*s_home_sd,*s_rec_export;
+static void sd_open_recording(const char *id);
+static void tick_sd(void);
+static bool s_sd_back_to_recorder;
 #endif
 static void build_weather_page(lv_obj_t *tile);
 static void tick_weather(void);
@@ -412,6 +416,7 @@ static void drop(lv_obj_t *p)
     }
 #if CONFIG_MUSE_MODULE_LLM
     if(p==s_recorder_page)s_recorder_page=NULL;
+    if(p==s_sd_page)s_sd_page=NULL;
 #endif
     lv_obj_delete_async(p);   /* we may be in one of its own events */
 }
@@ -446,6 +451,11 @@ static void go_back(void)
 {
     if (s_current == s_text) {
         close_text();
+#if CONFIG_MUSE_MODULE_LLM
+    } else if(s_current==s_sd_page && s_sd_back_to_recorder && s_recorder_page){
+        lv_obj_t *closing=s_sd_page;
+        show(s_recorder_page);drop(closing);s_last_route=&RECORDER;
+#endif
     } else if (s_current != s_home) {
         s_forward_route=s_last_route;
         show(s_home);
@@ -1563,6 +1573,7 @@ static void rec_action(lv_event_t *e){
  else if(action==7){s_rec_original=false;s_rec_reading=true;s_rec_scroll_pending=true;muse_memory_recorder_action("recprev",0,0);}
  else if(action==8){s_rec_original=false;s_rec_reading=true;s_rec_scroll_pending=true;muse_memory_recorder_action("recnext",0,0);}
  else if(action==9){s_rec_original=!s_rec_original;s_rec_scroll_pending=true;muse_memory_recorder_action("recpage",0,s_rec_original?1:0);}
+ else if(action==10 && !v.active && v.id[0])sd_open_recording(v.id);
 }
 static lv_obj_t *rec_button(lv_obj_t *list,const char *text,uint32_t color,int action){
  lv_obj_t *b=button(list,text,color,rec_action,NULL);lv_obj_set_height(b,42);lv_obj_remove_event_cb(b,rec_action);lv_obj_add_event_cb(b,rec_action,LV_EVENT_CLICKED,(void *)(intptr_t)action);return b;
@@ -1585,6 +1596,7 @@ static void build_recorder_page(lv_obj_t *tile){
  s_rec_audio_sw=switch_row(list,"Save compressed audio",s_rec_audio_choice,rec_audio_change);s_rec_audio_row=lv_obj_get_parent(s_rec_audio_sw);
  note(list,"Start, then wait for the screen to darken. Any front button or double tap wakes controls.");
  s_rec_older=rec_button(list,"Older recording",COLOR_ACCENT,7);s_rec_newer=rec_button(list,"Newer recording",COLOR_ACCENT,8);
+ s_rec_export=rec_button(list,LV_SYMBOL_SD_CARD "  Export to microSD",COLOR_ACCENT,10);
  note(list,"AI review is a suggestion. Raw text and audio stay unchanged.");
  s_rec_page_label=note(list,"");
  s_rec_nav=lv_obj_create(list);lv_obj_set_size(s_rec_nav,lv_pct(100),38);lv_obj_set_flex_flow(s_rec_nav,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_all(s_rec_nav,0,0);lv_obj_set_style_pad_column(s_rec_nav,4,0);lv_obj_set_style_border_width(s_rec_nav,0,0);lv_obj_set_style_bg_opa(s_rec_nav,LV_OPA_TRANSP,0);lv_obj_remove_flag(s_rec_nav,LV_OBJ_FLAG_SCROLLABLE);
@@ -1616,6 +1628,7 @@ static void tick_recorder(void){
  rec_enabled(s_rec_audio_sw,!v.active);rec_enabled(s_rec_read,!v.active&&v.id[0]);rec_enabled(s_rec_older,!v.active&&v.older);rec_enabled(s_rec_newer,!v.active&&v.newer);
  rec_visible(s_rec_original_button,s_rec_reading&&!v.active);rec_enabled(s_rec_original_button,!v.active);set_text(lv_obj_get_child(s_rec_original_button,0),s_rec_original?"AI review":"Original");
  rec_visible(s_rec_nav,s_rec_reading);rec_visible(s_rec_page_label,s_rec_reading);rec_visible(s_rec_prevpage,s_rec_reading);rec_visible(s_rec_nextpage,s_rec_reading);rec_visible(s_rec_text,s_rec_reading);
+ rec_visible(s_rec_export,v.id[0]&&!v.active);
  rec_enabled(s_rec_prevpage,!v.active&&v.page>0);rec_enabled(s_rec_nextpage,!v.active&&v.page+1<v.pages);
  if(s_rec_reading){snprintf(buf,sizeof(buf),"%s / page %u of %u",(s_rec_original||strncmp(v.note,"AI review ready",15))?"Original":"AI review",v.page+1,v.pages?v.pages:1);set_text(s_rec_page_label,buf);if(strcmp(lv_label_get_text(s_rec_text),v.text))lv_label_set_text(s_rec_text,v.text[0]?v.text:"Loading transcript...");if(s_rec_scroll_pending&&v.text[0]){lv_obj_update_layout(s_recorder_list);lv_obj_scroll_to_y(s_recorder_list,lv_obj_get_y(s_rec_page_label),LV_ANIM_OFF);s_rec_scroll_pending=false;}}
 }
@@ -1648,6 +1661,194 @@ void muse_settings_ui_bench_startup(bool on){
 #endif
 static const page_t STARTUP={&s_startup,build_startup_page};
 static const page_t RECORDER={&s_recorder_page,build_recorder_page};
+
+/* ---------- Removable storage ---------- */
+typedef enum {
+    SD_REFRESH, SD_MOUNT, SD_EJECT, SD_UP, SD_PREVIOUS, SD_NEXT,
+    SD_CREATE, SD_OPEN, SD_RENAME, SD_DELETE, SD_FORMAT, SD_CONFIRM,
+    SD_MOVE_START, SD_MOVE_HERE, SD_MOVE_CANCEL,
+    SD_CANCEL, SD_ALL, SD_RECORDINGS, SD_TRANSCRIPTS, SD_CONVERSATIONS, SD_USB,
+    SD_ROW0
+} sd_action_t;
+static const char *const sd_commands[]={
+    [SD_REFRESH]="refresh",[SD_MOUNT]="mount",[SD_EJECT]="eject",[SD_UP]="up",
+    [SD_PREVIOUS]="previous",[SD_NEXT]="next",[SD_OPEN]="open",
+    [SD_DELETE]="delete_arm",[SD_FORMAT]="format_arm",
+    [SD_MOVE_START]="move_arm",[SD_MOVE_HERE]="move_here",[SD_MOVE_CANCEL]="move_cancel",
+};
+static const char *const sd_exports[]={"all","recordings","transcripts","conversations"};
+static lv_obj_t *s_sd_list,*s_sd_status,*s_sd_capacity,*s_sd_meter,*s_sd_path,*s_sd_detail,*s_sd_usb;
+static lv_obj_t *s_sd_controls[SD_ROW0+MUSE_SD_ROWS],*s_sd_rows[MUSE_SD_ROWS];
+static lv_obj_t *s_sd_item_box,*s_sd_item_title,*s_sd_export_title,*s_sd_confirm_box,*s_sd_confirm_text;
+static lv_obj_t *s_sd_move_box,*s_sd_move_text;
+static muse_sd_view_t s_sd_view;
+static int s_sd_selected;
+static char s_sd_name_token[17],s_sd_recording[33];
+static uint32_t s_sd_version;
+static int64_t s_sd_poll_at;
+static bool s_sd_usb_open,s_sd_confirm_hidden;
+static void sd_mkdir(const char *name){muse_memory_sd_action("mkdir",NULL,name);}
+static void sd_rename(const char *name){muse_memory_sd_action("rename",s_sd_name_token,name);}
+
+static void sd_click(lv_event_t *event)
+{
+    sd_action_t action=(sd_action_t)(intptr_t)lv_event_get_user_data(event);
+    muse_state_poke();
+    muse_memory_sd_copy(&s_sd_view);
+    if(s_sd_view.busy)return;
+    if(action>=SD_ROW0){s_sd_selected=action-SD_ROW0;tick_sd();lv_obj_scroll_to_view(s_sd_item_box,LV_ANIM_ON);return;}
+    if(action==SD_USB){s_sd_usb_open=!s_sd_usb_open;tick_sd();if(s_sd_usb_open)lv_obj_scroll_to_view(s_sd_usb,LV_ANIM_ON);return;}
+    if(action==SD_CANCEL){s_sd_confirm_hidden=true;muse_memory_sd_action("refresh",NULL,NULL);tick_sd();return;}
+    const muse_sd_item_t *item=s_sd_selected>=0?&s_sd_view.items[s_sd_selected]:NULL;
+    if(action==SD_CREATE){open_text("New folder",NULL,false,48,"Folder name",sd_mkdir,s_sd_page);return;}
+    if(action==SD_RENAME && item && item->token[0]){
+        strlcpy(s_sd_name_token,item->token,sizeof(s_sd_name_token));
+        open_text("Rename on card",item->name,false,48,"New name",sd_rename,s_sd_page);return;
+    }
+    if(action==SD_CONFIRM){
+        if(s_sd_view.token[0] && !s_sd_confirm_hidden)
+            muse_memory_sd_action(s_sd_view.mounted?"delete_do":"format_do",s_sd_view.token,NULL);
+    }else if(action>=SD_ALL && action<=SD_CONVERSATIONS){
+        muse_memory_sd_action("export",s_sd_recording[0]?s_sd_recording:NULL,sd_exports[action-SD_ALL]);
+    }else if((action!=SD_OPEN && action!=SD_DELETE && action!=SD_MOVE_START) || (item && item->token[0])){
+        if(sd_commands[action])muse_memory_sd_action(sd_commands[action],item?item->token:NULL,NULL);
+    }
+    if(action==SD_DELETE || action==SD_FORMAT)s_sd_confirm_hidden=false;
+    tick_sd();
+}
+
+static lv_obj_t *sd_group(lv_obj_t *parent,bool horizontal)
+{
+    lv_obj_t *group=lv_obj_create(parent);lv_obj_remove_style_all(group);
+    lv_obj_set_width(group,lv_pct(100));lv_obj_set_height(group,LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(group,horizontal?LV_FLEX_FLOW_ROW:LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(group,5,0);lv_obj_remove_flag(group,LV_OBJ_FLAG_SCROLLABLE);
+    return group;
+}
+
+static lv_obj_t *sd_button(lv_obj_t *parent,sd_action_t action,const char *text,uint32_t color,bool small,lv_obj_t **value)
+{
+    lv_obj_t *obj=button(parent,text,color,sd_click,value);
+    lv_obj_remove_event_cb(obj,sd_click);
+    lv_obj_add_event_cb(obj,sd_click,LV_EVENT_CLICKED,(void *)(intptr_t)action);
+    lv_obj_set_height(obj,40);
+    if(small){lv_obj_set_width(obj,0);lv_obj_set_flex_grow(obj,1);}
+    s_sd_controls[action]=obj;
+    return obj;
+}
+
+static void build_sd_page(lv_obj_t *tile)
+{
+    s_sd_page=page(tile,"MICROSD",true,&s_sd_list);
+    s_sd_selected=-1;s_sd_version=UINT32_MAX;s_sd_poll_at=0;
+    s_sd_usb_open=false;s_sd_confirm_hidden=false;s_sd_back_to_recorder=false;s_sd_recording[0]=0;
+    s_sd_capacity=note(s_sd_list,"Module LLM / Removable storage");
+    s_sd_meter=lv_bar_create(s_sd_list);lv_obj_set_size(s_sd_meter,lv_pct(100),7);
+    lv_obj_set_style_bg_color(s_sd_meter,lv_color_hex(COLOR_CARD_PRESSED),LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_sd_meter,lv_color_hex(COLOR_ACCENT),LV_PART_INDICATOR);
+    s_sd_status=note(s_sd_list,"Checking for a card...");
+    lv_obj_t *group=sd_group(s_sd_list,true);
+    sd_button(group,SD_REFRESH,"Refresh",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_MOUNT,"Mount",COLOR_OK,true,NULL);
+    sd_button(group,SD_EJECT,"Eject",COLOR_WARN,true,NULL);
+    sd_button(s_sd_list,SD_FORMAT,"Format as FAT32...",COLOR_DANGER,false,NULL);
+    s_sd_confirm_box=sd_group(s_sd_list,false);
+    s_sd_confirm_text=note(s_sd_confirm_box,"");
+    group=sd_group(s_sd_confirm_box,true);
+    sd_button(group,SD_CANCEL,"Cancel",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_CONFIRM,"Confirm",COLOR_DANGER,true,NULL);
+    s_sd_export_title=note(s_sd_list,"EXPORT TO SD / Keeps the originals");
+    group=sd_group(s_sd_list,true);
+    sd_button(group,SD_ALL,"Export all",COLOR_OK,true,NULL);
+    sd_button(group,SD_RECORDINGS,"Recordings",COLOR_ACCENT,true,NULL);
+    group=sd_group(s_sd_list,true);
+    sd_button(group,SD_TRANSCRIPTS,"Transcripts",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_CONVERSATIONS,"Conversations",COLOR_ACCENT,true,NULL);
+    s_sd_path=note(s_sd_list,"/");
+    s_sd_move_box=sd_group(s_sd_list,false);
+    s_sd_move_text=note(s_sd_move_box,"");
+    group=sd_group(s_sd_move_box,true);
+    sd_button(group,SD_MOVE_HERE,"Move here",COLOR_OK,true,NULL);
+    sd_button(group,SD_MOVE_CANCEL,"Cancel move",COLOR_ACCENT,true,NULL);
+    group=sd_group(s_sd_list,true);
+    sd_button(group,SD_UP,"Up",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_CREATE,"New folder",COLOR_ACCENT,true,NULL);
+    for(unsigned i=0;i<MUSE_SD_ROWS;i++){
+        sd_button(s_sd_list,SD_ROW0+i,"",COLOR_ACCENT,false,&s_sd_rows[i]);
+        lv_obj_set_width(s_sd_rows[i],lv_pct(94));lv_label_set_long_mode(s_sd_rows[i],LV_LABEL_LONG_MODE_DOTS);
+    }
+    s_sd_item_box=sd_group(s_sd_list,false);
+    s_sd_item_title=note(s_sd_item_box,"");
+    group=sd_group(s_sd_item_box,true);
+    sd_button(group,SD_OPEN,"Open",COLOR_OK,true,NULL);
+    sd_button(group,SD_RENAME,"Rename",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_DELETE,"Delete...",COLOR_DANGER,true,NULL);
+    sd_button(s_sd_item_box,SD_MOVE_START,"Move to another folder",COLOR_ACCENT,false,NULL);
+    s_sd_detail=label(s_sd_list,&lv_font_montserrat_14,COLOR_TEXT,"");
+    lv_obj_set_width(s_sd_detail,lv_pct(100));lv_label_set_long_mode(s_sd_detail,LV_LABEL_LONG_MODE_WRAP);
+    group=sd_group(s_sd_list,true);
+    sd_button(group,SD_PREVIOUS,LV_SYMBOL_LEFT "  Previous",COLOR_ACCENT,true,NULL);
+    sd_button(group,SD_NEXT,"Next  " LV_SYMBOL_RIGHT,COLOR_ACCENT,true,NULL);
+    sd_button(s_sd_list,SD_USB,"Share / Copy to PC",COLOR_ACCENT,false,NULL);
+    s_sd_usb=note(s_sd_list,"Use Eject before moving the card to a PC reader. For USB copy with the card mounted, use the Storyteller USB copy helper.");
+    muse_memory_sd_action("refresh",NULL,NULL);
+}
+static const page_t SD={&s_sd_page,build_sd_page};
+
+static void sd_open_recording(const char *id)
+{
+    if(!s_sd_page)build_sd_page(s_tile);
+    strlcpy(s_sd_recording,id,sizeof(s_sd_recording));s_sd_version=UINT32_MAX;s_sd_back_to_recorder=true;
+    s_last_route=&SD;s_forward_route=NULL;show(s_sd_page);tick_sd();
+}
+
+static void tick_sd(void)
+{
+    muse_memory_sd_copy(&s_sd_view);
+    const muse_sd_view_t *v=&s_sd_view;
+    int64_t now=esp_timer_get_time();
+    if(v->busy && now>=s_sd_poll_at){s_sd_poll_at=now+700000;muse_memory_sd_action("status",NULL,NULL);}
+    bool updated=!v->busy && v->version!=s_sd_version;
+    if(updated){s_sd_version=v->version;s_sd_selected=-1;}
+    char text[198];
+    if(v->busy && v->total){snprintf(text,sizeof(text),"Copying to microSD | %u of %u",v->done,v->total);set_text(s_sd_status,text);}
+    else set_text(s_sd_status,v->busy?"Working on microSD...":v->note[0]?v->note:"Tap Refresh to check the Module slot");
+    if(v->mounted)snprintf(text,sizeof(text),"%.1f GB free of %.1f GB / %s",v->free_mb/1024.0,v->total_mb/1024.0,v->writable?"Mounted":"Read only");
+    else if(v->total_mb)snprintf(text,sizeof(text),"%.1f GB card / Ejected",v->total_mb/1024.0);
+    else snprintf(text,sizeof(text),"Module LLM / Removable storage");
+    set_text(s_sd_capacity,text);
+    rec_visible(s_sd_meter,v->mounted || (v->busy&&v->total));
+    unsigned filled=v->busy&&v->total?100*v->done/v->total:v->total_mb&&v->free_mb<=v->total_mb?100*(v->total_mb-v->free_mb)/v->total_mb:0;
+    if(lv_bar_get_value(s_sd_meter)!=(int)filled)lv_bar_set_value(s_sd_meter,filled,LV_ANIM_OFF);
+    bool mounted=v->mounted,write=mounted&&v->writable,confirm=!v->busy&&v->confirm[0]&&!s_sd_confirm_hidden;
+    bool selected=s_sd_selected>=0 && v->items[s_sd_selected].token[0];
+    for(unsigned i=0;i<SD_ROW0+MUSE_SD_ROWS;i++)rec_enabled(s_sd_controls[i],!v->busy);
+    rec_visible(s_sd_controls[SD_MOUNT],!mounted&&v->total_mb);
+    rec_visible(s_sd_controls[SD_EJECT],mounted);
+    rec_visible(s_sd_controls[SD_FORMAT],!mounted&&v->formattable&&!confirm);
+    rec_visible(s_sd_confirm_box,confirm);set_text(s_sd_confirm_text,v->confirm);
+    rec_visible(s_sd_export_title,write);
+    set_text(s_sd_export_title,s_sd_recording[0]?"EXPORT TO SD / Selected recording":"EXPORT TO SD / Keeps the originals");
+    for(int i=SD_ALL;i<=SD_CONVERSATIONS;i++)rec_visible(s_sd_controls[i],write && (!s_sd_recording[0] || i==SD_RECORDINGS || i==SD_TRANSCRIPTS));
+    rec_visible(s_sd_path,mounted);rec_visible(s_sd_controls[SD_CREATE],write);
+    rec_visible(s_sd_move_box,write&&v->moving[0]);
+    snprintf(text,sizeof(text),"Moving %.72s",v->moving);set_text(s_sd_move_text,text);
+    rec_visible(s_sd_controls[SD_UP],mounted && strcmp(v->path,"/"));
+    rec_visible(s_sd_controls[SD_PREVIOUS],mounted&&v->page>0);rec_visible(s_sd_controls[SD_NEXT],mounted&&v->more);
+    snprintf(text,sizeof(text),"%.104s  |  %u item%s",v->path,v->count,v->count==1?"":"s");set_text(s_sd_path,text);
+    for(unsigned i=0;i<MUSE_SD_ROWS;i++){
+        rec_visible(s_sd_controls[SD_ROW0+i],mounted&&v->items[i].token[0]);
+        snprintf(text,sizeof(text),"%s  %s",v->items[i].folder?LV_SYMBOL_DIRECTORY:LV_SYMBOL_FILE,v->items[i].name);set_text(s_sd_rows[i],text);
+    }
+    rec_visible(s_sd_item_box,mounted&&selected&&!confirm);
+    rec_visible(s_sd_controls[SD_RENAME],write);rec_visible(s_sd_controls[SD_DELETE],write);
+    rec_visible(s_sd_controls[SD_MOVE_START],write);
+    if(selected)set_text(s_sd_item_title,v->items[s_sd_selected].name);
+    rec_visible(s_sd_detail,mounted&&v->detail[0]);set_text(s_sd_detail,v->detail);
+    rec_visible(s_sd_usb,s_sd_usb_open);
+    if(updated && confirm)lv_obj_scroll_to_view(s_sd_confirm_box,LV_ANIM_ON);
+    else if(updated && v->detail[0])lv_obj_scroll_to_view(s_sd_detail,LV_ANIM_ON);
+}
 #endif
 /* Read-only guide: allocated on entry and released by normal page navigation. */
 static void command_guide_text(lv_obj_t *parent, const char *text, const lv_font_t *font, uint32_t color)
@@ -1748,6 +1949,8 @@ static void build_home(lv_obj_t *tile)
 #if CONFIG_MUSE_MODULE_LLM
     row(list, LV_SYMBOL_AUDIO, "Recorder", &s_home_recorder, on_nav, (void *)&RECORDER);
     set_text(s_home_recorder,"Connecting...");
+    row(list, LV_SYMBOL_SD_CARD, "microSD", &s_home_sd, on_nav, (void *)&SD);
+    set_text(s_home_sd,"Module storage");
 #endif
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
@@ -1779,6 +1982,10 @@ static void tick_home(void)
     else if(!strcmp(rec.state,"error")){strlcpy(rec_text,"Check recorder",sizeof(rec_text));rec_color=COLOR_WARN;}
     else strlcpy(rec_text,rec.id[0]?"Saved":"Ready",sizeof(rec_text));
     set_text(s_home_recorder,rec_text);
+    static muse_sd_view_t sd_home;
+    muse_memory_sd_copy(&sd_home);
+    if(sd_home.mounted)set_val(s_home_sd,"%u GB free",sd_home.free_mb/1024);
+    else set_text(s_home_sd,sd_home.total_mb?"Ejected":"Module storage");
     if(s_home_recorder && lv_color_to_u32(lv_obj_get_style_text_color(s_home_recorder,0))!=lv_color_to_u32(lv_color_hex(rec_color)))lv_obj_set_style_text_color(s_home_recorder,lv_color_hex(rec_color),0);
     /* Active capture already polls globally. Refresh idle review/save status here too. */
     muse_module_llm_status_t rec_voice;muse_module_llm_status(&rec_voice);
@@ -1884,6 +2091,7 @@ void muse_settings_ui_tick(bool visible)
     }
 #if CONFIG_MUSE_MODULE_LLM
     if(s_current==s_recorder_page){tick_recorder();return;}
+    if(s_current==s_sd_page){tick_sd();return;}
 #endif
     if (s_current == s_home) {
         tick_home();

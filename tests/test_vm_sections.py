@@ -1,4 +1,5 @@
 import hashlib,json,sys,tempfile,threading,types,unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
@@ -9,7 +10,7 @@ from muse_speech_text import SpeechText
 class GeneratedSections(unittest.TestCase):
  def test_synthesis_and_plan_transfer_can_start_before_models_finish_loading(self):
   with tempfile.TemporaryDirectory() as directory:
-   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed. The river was quiet.')
+   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed beside the old window. The river was quiet under the midnight sky.')
    rendering=threading.Event();checked=[]
    class Checker:
     def check(self,*args):checked.append(True);return dict(aligned=True)
@@ -17,7 +18,7 @@ class GeneratedSections(unittest.TestCase):
     self.assertTrue(rendering.wait(2),'Synthesis incorrectly waits for model loading')
     self.assertTrue((folder/'plan.json').exists());self.assertTrue((folder/'meta.json').exists())
     return Checker()
-   def render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
+   def render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker,**kwargs):
     rendering.set();self.assertTrue(checker.check(b'', 'test', 0)['aligned'])
     (folder/('part-%03d.mp3'%part['index'])).write_bytes(b'a'*144)
     return dict(audio_bytes=144)
@@ -28,7 +29,7 @@ class GeneratedSections(unittest.TestCase):
   with tempfile.TemporaryDirectory() as directory:
    folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed.')
    def factory():raise RuntimeError('Model unavailable')
-   def render(*args):return args[-1].check(b'', 'test', 0)
+   def render(*args,**kwargs):return args[-1].check(b'', 'test', 0)
    with patch.object(sections,'_render',side_effect=render),self.assertRaises(RuntimeError):
     sections.synthesize_sections(folder,'avocado_v2:MAI_01',checker_factory=factory)
    self.assertEqual(json.loads((folder/'meta.json').read_text())['state'],'error')
@@ -66,9 +67,11 @@ class GeneratedSections(unittest.TestCase):
    self.assertFalse((folder/'part-000.mp3').exists())
  def test_joined_hash_and_order_cover_every_sentence(self):
   with tempfile.TemporaryDirectory() as directory:
-   folder=Path(directory);text='The blue lantern glowed. The river was quiet. The keeper came home.'
+   folder=Path(directory);text=('The blue lantern glowed beside the old window. '
+                               'The river was quiet under the midnight sky. '
+                               'The keeper came home just before the rain.')
    (folder/'source.md').write_text(text)
-   def render(folder,part,*args):
+   def render(folder,part,*args,**kwargs):
     data=bytes([part['index']+1])*144;(folder/('part-%03d.mp3'%part['index'])).write_bytes(data)
     return dict(audio_bytes=len(data))
    with patch.object(sections,'_render',side_effect=render):
@@ -77,5 +80,81 @@ class GeneratedSections(unittest.TestCase):
    self.assertEqual(audio,b'\1'*144+b'\2'*144+b'\3'*144)
    self.assertEqual(result['state'],'complete');self.assertEqual(result['ready_sections'],3)
    self.assertEqual(result['audio_sha256'],hashlib.sha256(audio).hexdigest())
+ def test_final_aria_retry_only_renders_the_missing_section(self):
+  with tempfile.TemporaryDirectory() as directory:
+   folder=Path(directory)
+   (folder/'source.md').write_text('The blue lantern glowed beside the old window. '
+                                  '"Wait," said the keeper beside the quiet river.')
+   calls=[]
+   class Process:
+    def __init__(self,args,stdout,**kwargs):
+     calls.append((stdout.name,args[args.index('--text')+1],args[args.index('--voice')+1],args[args.index('--speed')+1]))
+     stdout.write(b'x'*200)
+    def wait(self,timeout):return 0
+   checks={}
+   class Checker:
+    def check(self,pcm,text,first):
+     checks.setdefault(first,[]).append(text)
+     if first and len(checks[first])<3:
+      raise ValueError('Incomplete speech')
+     return dict(aligned=True,words=[[0,.2,first]],pcm_samples=len(pcm)//2)
+   with patch.object(sections.subprocess,'Popen',Process),patch.object(sections.subprocess,'run',fake_audio),patch.object(sections,'terminate'):
+    result=sections.synthesize_sections(folder,'avocado_v2:MAI_01',speed='slow',checker=Checker())
+   first,second=(json.loads((folder/name).read_text()) for name in ('part-000.json','part-001.json'))
+   self.assertEqual((first['attempts'],second['attempts']),(1,3))
+   self.assertEqual({(voice,speed) for _,_,voice,speed in calls},{('avocado_v2:MAI_01','85')})
+   retried=[phrase for path,phrase,_,_ in calls if 'part-001-' in path]
+   self.assertEqual(len(retried),3)
+   self.assertIn('"',retried[0])
+   self.assertNotIn('"',retried[-1])
+   self.assertEqual(checks[second['word_start']],[retried[0]]*3)
+   self.assertEqual(second['words'][0][-1],second['word_start'])
+   self.assertEqual(result['state'],'complete')
+
+ def test_retry_timeout_publishes_section_error_while_verification_is_busy(self):
+  with tempfile.TemporaryDirectory() as directory:
+   folder=Path(directory);(folder/'source.md').write_text('The blue lantern glowed.')
+   entered=threading.Event();release=threading.Event();failed=threading.Event()
+   class Process:
+    def __init__(self,args,stdout,**kwargs):stdout.write(b'x'*200)
+    def wait(self,timeout):return 0
+   class Checker:
+    calls=0
+    def check(self,pcm,text,first):
+     self.calls+=1
+     if self.calls<3:raise ValueError('Incomplete speech')
+     entered.set();release.wait(5)
+     return dict(aligned=True)
+   publish=sections.atomic_json
+   def observe(path,meta):
+    publish(path,meta)
+    if path.name=='part-000.json' and meta['state']=='error':failed.set()
+   with patch.object(sections.subprocess,'Popen',Process),patch.object(sections.subprocess,'run',fake_audio), \
+        patch.object(sections,'terminate'),patch.object(sections,'atomic_json',observe), \
+        patch.object(sections,'FINAL_RETRY_SECONDS',.4),ThreadPoolExecutor(max_workers=1) as worker:
+    job=worker.submit(sections.synthesize_sections,folder,'avocado_v2:MAI_01',checker=Checker())
+    try:
+     self.assertTrue(entered.wait(2))
+     self.assertTrue(failed.wait(2),'Piper must be eligible even while the verifier is busy')
+     self.assertFalse((folder/'part-000.mp3').exists())
+    finally:
+     release.set()
+    with self.assertRaises(RuntimeError):job.result(timeout=2)
+   self.assertEqual(json.loads((folder/'part-000.json').read_text())['state'],'error')
+   self.assertFalse((folder/'part-000.mp3').exists())
+
+ def test_short_dialogue_shares_a_section_without_dropping_words(self):
+  spoken=SpeechText('"Wait." "Why?" "Listen." The hallway fell silent as the lights went out. "Run."')
+  old=sections.plan_sections(spoken,minimum_words=1)
+  grouped=sections.plan_sections(spoken)
+  self.assertLess(len(grouped),len(old))
+  self.assertGreaterEqual(min(part['word_count'] for part in grouped),7)
+  self.assertEqual(sum(part['word_count'] for part in grouped),len(spoken.words))
+  self.assertTrue(grouped[-1]['sentence_end'])
+
+def fake_audio(args,**kwargs):
+ if args[-1]=='pipe:1':return types.SimpleNamespace(stdout=b'\0'*115200)
+ Path(args[-1]).write_bytes(b'a'*(144*100))
+ return types.SimpleNamespace(returncode=0)
 
 if __name__=='__main__':unittest.main()

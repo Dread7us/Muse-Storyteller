@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.5.3**
+**Edition v0.6.1**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -37,13 +37,15 @@ Prepared Helio/Aria narration now uses independently checked, sentence-aware sec
 The opening can play while later sections arrive; real word timings travel with each
 section, and incorrect or repeating generated speech is retried before admission.
 Pause, live volume, Stop and cached Restart stay available during narration and buffering.
+The shared volume control attenuates Piper during local narration and when it fills a missing online section.
 This path requires the matching Muse-side helpers described in the setup notes.
 Fresh online replies still depend on Muse's response and audio-generation time;
 a prior successful fresh-response check took about 50 seconds to first speech.
 See the [measured checks and remaining limit](docs/VALIDATION.md#editions-040041-verified-sentence-narration).
-The startup splash and reply reader now show a full-to-empty **work remaining**
-bar with the current step and an estimated countdown. Estimates are marked `*`,
-learn locally from successful preparation, and never reach zero before real readiness.
+The startup splash and reply reader show the current step, an estimated time,
+and a progress bar. The device marks time estimates with `*` and learns from
+successful preparation. Once a narration plan arrives, the bar shows the number
+of verified sections and labels rechecks, reconnects, and Piper fallback.
 
 Sound now also offers **Muse app voice – direct**: it retrieves the response's
 native audio without asking Muse to create and deliver a separate file. It uses
@@ -95,7 +97,8 @@ Unavailable actions dim automatically; Pause changes to Resume during paused pla
 | 🎚️ | **Settings that actually change** | Explicit spoken commands apply volume, mute, brightness, and speech speed, then confirm the stored value. Muting is visible in the header. |
 | 🗂️ | **Local conversation library** | Automatic drafts, bookmarks, paging, resume, deletion, and regenerated titles. Bounded recent context and local recall support longer conversations. |
 | 📝 | **Local Recorder** | Screen-off recording, text transcripts, optional compressed WAV chunks, and a separate conservative AI-reviewed copy. Original text is retained. |
-| 🌤️ | **Useful status at a glance** | Battery, Wi-Fi strength, selected volume/mute, optional five-day weather, and a clearly labeled Muse allowance estimate. |
+| 💾 | **Removable exports** | Browse a Module LLM microSD card and copy recordings, transcripts, or conversation backups from **Settings → microSD**. [Card guide](docs/MICROSD.md) |
+| 🌤️ | **Useful status at a glance** | Battery, Wi-Fi strength, selected volume/mute, optional five-day weather, and a Muse allowance estimate with accuracy tracking. |
 
 The additions were developed and exercised on a real Core2 v1.1 + Module LLM stack.
 This repository is a **source preview**, not a universal factory-to-finished installer.
@@ -135,10 +138,11 @@ also uses the Module’s local model when available.
 allowance and service terms still apply. This project does not make Muse itself offline,
 increase its allowance, or add a paid speech API.
 
-**Usage is an estimate between syncs.** A fresh website check currently needs the optional
-Windows Chrome helper, signed into Muse, with Module USB connected. The on-device
-button says **Sync via PC**, distinguishes waiting from success/failure, and retains the
-last good reading if a check fails. [Usage helper details →](docs/USAGE.md)
+**Usage is an estimate between checks.** Tap **Check now** to ask the paired Muse for
+its latest allowance over Wi-Fi. The device keeps the last confirmed reading if a check
+fails. The usage popup compares the estimate shown before a successful check with Muse’s
+verified reading and shows the latest miss and recent average. The local accuracy report
+compares consecutive groups of five checks as evidence builds. [Usage and accuracy guide →](docs/USAGE.md)
 
 ## Voice commands that actually control the device
 

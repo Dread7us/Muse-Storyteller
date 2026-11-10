@@ -21,13 +21,27 @@ typedef struct {
 } muse_memory_view_t;
 typedef struct {bool supported,active,audio,older,newer;unsigned seconds,lines,audio_mb,page,pages;uint32_t version;char state[16],note[96],id[33],text[1025];} muse_recorder_view_t;
 void muse_memory_recorder_copy(muse_recorder_view_t *out);
+#define MUSE_SD_ROWS 4
+typedef struct {char name[73],token[17];bool folder;} muse_sd_item_t;
+typedef struct {
+    uint32_t version;
+    bool mounted,writable,formattable,more,busy;
+    unsigned count,page,total_mb,free_mb,done,total;
+    char state[14],note[117],path[105],token[17],confirm[117],detail[472],moving[73];
+    muse_sd_item_t items[MUSE_SD_ROWS];
+} muse_sd_view_t;
+void muse_memory_sd_copy(muse_sd_view_t *out);
+bool muse_memory_sd_action(const char *action,const char *token,const char *name);
 bool muse_memory_recorder_active(void);
 bool muse_memory_recorder_action(const char *op,unsigned page,unsigned level);
 void muse_memory_init(void);
 typedef struct {
     bool valid,learned,pending,refresh_supported,refresh_pending;
-    char refresh_note[96],last_sync[32],refresh_state[12],refresh_id[33];
+    char refresh_note[96],last_sync[32],refresh_state[12];
     unsigned used,observed,age;
+    bool accuracy_valid;
+    unsigned accuracy_count,accuracy_mae;
+    int accuracy_miss;
     uint32_t received_ms;
     char reset[20],checked[24];
 } muse_usage_view_t;

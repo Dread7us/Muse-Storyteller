@@ -295,11 +295,14 @@ class Engine:
                         backend.word_callback = lambda start, end: self.send(req, "word", start=start, end=end)
                         if req['data'].get('external_key'):
                             from muse_native_audio import NativeAudioError
+                            backend.narration_source_callback=lambda offline:self.send(req,'speaking',offline=offline)
                             try:
                                 self.native_store.play(backend,req['data']['external_key'],req['data']['text'],req['data'].get('volume',70),operation.cancel,lambda:self.send(req,'speaking'),lambda:self.send(req,'buffering'))
                             except Cancelled:raise
                             except Exception as exc:
                                 raise BridgeError(-35,str(exc) if isinstance(exc,NativeAudioError) else 'Muse audio playback failed') from exc
+                            finally:
+                                backend.narration_source_callback=None
                         else:
                             backend.speak(req["data"]["text"], req["data"].get("volume", 70), operation.cancel,
                                           lambda: self.send(req, "speaking"))

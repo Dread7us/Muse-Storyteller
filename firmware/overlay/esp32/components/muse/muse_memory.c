@@ -2,17 +2,20 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "muse_memory.h"
 #include "muse_module_llm.h"
+#include "muse_link.h"
 #include "muse_chat.h"
 #include "muse_mem.h"
 #include "muse_state.h"
 #include "muse_conversation.h"
 #include "driver/uart.h"
 #include "esp_random.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "sdkconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,12 +34,23 @@ static SemaphoreHandle_t s_mutex;
 EXT_RAM_BSS_ATTR static muse_memory_view_t s_view;
 EXT_RAM_BSS_ATTR static muse_usage_view_t s_usage;
 EXT_RAM_BSS_ATTR static muse_recorder_view_t s_recorder;
+EXT_RAM_BSS_ATTR static muse_sd_view_t s_sd;
+static bool s_sd_inflight;
+void muse_memory_sd_copy(muse_sd_view_t *out)
+{
+    if(!s_mutex){memset(out,0,sizeof(*out));return;}
+    xSemaphoreTake(s_mutex,portMAX_DELAY);
+    *out=s_sd;out->busy=out->busy||s_sd_inflight;
+    xSemaphoreGive(s_mutex);
+}
 static bool s_recorder_starting;
 void muse_memory_recorder_copy(muse_recorder_view_t *out){if(!out)return;memset(out,0,sizeof(*out));if(s_mutex){xSemaphoreTake(s_mutex,portMAX_DELAY);*out=s_recorder;out->active=out->active||s_recorder_starting;xSemaphoreGive(s_mutex);}}
 bool muse_memory_recorder_active(void){if(!s_mutex)return false;xSemaphoreTake(s_mutex,portMAX_DELAY);bool active=s_recorder.active||s_recorder_starting;xSemaphoreGive(s_mutex);return active;}
 
 static int64_t s_usage_poll=5000000;
 static volatile bool s_usage_soon;
+static int64_t s_usage_auto_due=45000000;
+static struct {bool valid;unsigned used;char reset[20];} s_usage_prediction;
 void muse_memory_usage_poll(void){s_usage_soon=true;}
 bool muse_memory_usage_copy(muse_usage_view_t *out)
 {
@@ -73,6 +87,7 @@ void muse_memory_init(void)
     s_assembly=heap_caps_calloc(1,8192,MUSE_BIG_CAPS);
     s_context=heap_caps_calloc(1,4800,MUSE_BIG_CAPS);
     s_recorder.pages=1;strlcpy(s_recorder.state,"idle",16);
+    s_usage.refresh_supported=true;
     s_view.resumed=true; /* restore context from the durable active draft after reboot */
     status("Local drafts / Save to bookmark");
 }
@@ -93,11 +108,144 @@ void muse_memory_record(bool user,const char *text)
     if(!j->text){free(j);status("Archive memory unavailable");return;}
     strcpy(j->text,text);enqueue(j);
 }
+static void usage_outcome(const char *state,const char *note)
+{
+    xSemaphoreTake(s_mutex,portMAX_DELAY);
+    s_usage.refresh_pending=!strcmp(state,"checking");
+    strlcpy(s_usage.refresh_state,state,sizeof(s_usage.refresh_state));
+    strlcpy(s_usage.refresh_note,note,sizeof(s_usage.refresh_note));
+    xSemaphoreGive(s_mutex);
+}
+
+static portMUX_TYPE usage_http_lock=portMUX_INITIALIZER_UNLOCKED;
+static struct {char text[257];size_t length;int status;bool done,overflow;} usage_http;
+static uint32_t usage_http_token;
+static void usage_http_reply(void *ctx,int status,const uint8_t *data,size_t size,bool end)
+{
+    portENTER_CRITICAL(&usage_http_lock);
+    if((uint32_t)(uintptr_t)ctx==usage_http_token){
+        if(status)usage_http.status=status;
+        if(data&&size){
+            if(size>sizeof(usage_http.text)-1-usage_http.length)usage_http.overflow=true;
+            else {memcpy(usage_http.text+usage_http.length,data,size);usage_http.length+=size;}
+        }
+        if(end||status<0)usage_http.done=true;
+    }
+    portEXIT_CRITICAL(&usage_http_lock);
+}
+
+/* Run only in the usage task. Bounded replies and tokens fence late callbacks. */
+static int usage_request(const char *path,const char *post,char out[257])
+{
+    const char *headers[]={"Content-Type","application/json",NULL};
+    portENTER_CRITICAL(&usage_http_lock);
+    memset(&usage_http,0,sizeof(usage_http));uint32_t token=++usage_http_token;
+    portEXIT_CRITICAL(&usage_http_lock);
+    int64_t id=muse_link_req_open(post?"POST":"GET",path,post?headers:NULL,!post,usage_http_reply,(void *)(uintptr_t)token);
+    if(!id)return -1;
+    bool sent=!post||muse_link_req_send(id,post,strlen(post),true,1000);
+    const int64_t limit=esp_timer_get_time()+4000000;
+    int result=-1;bool done=false;
+    while(sent&&esp_timer_get_time()<limit){
+        portENTER_CRITICAL(&usage_http_lock);
+        done=usage_http.done;
+        if(done&&(!out||!usage_http.overflow)){
+            result=usage_http.status;
+            if(out)memcpy(out,usage_http.text,usage_http.length+1);
+        }
+        portEXIT_CRITICAL(&usage_http_lock);
+        if(done)break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if(!done)muse_link_req_cancel(id);
+    return result;
+}
+
+extern const char *identity_node_id(void);
+static void usage_worker(void *unused)
+{
+    const char *error="Muse did not return a fresh reading.";
+    char nonce[33],path[100],prompt[1024],thread[37],out[257];
+    uint8_t mac[6];
+    for(unsigned i=0;i<4;i++)snprintf(nonce+8*i,9,"%08lx",(unsigned long)esp_random());
+    if(!muse_link_req_ready()||esp_read_mac(mac,ESP_MAC_WIFI_STA)!=ESP_OK){
+        error="Connect Muse to Wi-Fi and retry.";goto done;
+    }
+    snprintf(thread,sizeof(thread),"7e8eb80c-2b28-4721-aeca-%02x%02x%02x%02x%02x%02x",mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+    snprintf(path,sizeof(path),"/fs/raw/muse-storyteller/usage/%s.json",nonce);
+    snprintf(prompt,sizeof(prompt),
+      "Muse Storyteller usage check. Call your own live, read-only subscription-status tool for this exact consumer Muse account. "
+      "Use only its current weekly whole percent used and reset date, in UTC as shown by Muse Settings. Never infer, round, or reuse an earlier reply. "
+      "Create the directory if needed and atomically save JSON at ~/muse-storyteller/usage/%s.json. "
+      "On tool success write {\"nonce\":\"%s\",\"state\":\"verified\",\"used\":PERCENT,\"reset\":\"Mon D\",\"observed_at\":UNIX_SECONDS}. "
+      "Use the current VM clock at the check. If the tool is unavailable, write the same nonce with state unavailable and omit all values. "
+      "Do not browse, change billing/settings, read chats or credentials, or create audio. Reply briefly when saved.",nonce,nonce);
+    cJSON *body=cJSON_CreateObject();
+    if(!body)goto done;
+    cJSON_AddStringToObject(body,"message",prompt);cJSON_AddStringToObject(body,"session_id",thread);
+    cJSON_AddStringToObject(body,"device_id",identity_node_id());cJSON_AddStringToObject(body,"output_modality","text");
+    char *post=cJSON_PrintUnformatted(body);cJSON_Delete(body);
+    if(!post)goto done;
+    int result=usage_request("/chat/stream",post,NULL);cJSON_free(post);
+    if(result>0&&(result<200||result>=300)){error="Muse could not start the allowance check.";goto done;}
+    // A lost acknowledgement can follow an accepted request. Poll the unique
+    // result instead of submitting a duplicate request.
+    const int64_t until=esp_timer_get_time()+65000000;
+    while(esp_timer_get_time()<until){
+        vTaskDelay(pdMS_TO_TICKS(1800));
+        int code=usage_request(path,NULL,out);
+        if(code==401||code==403){error="Muse could not read the check result.";break;}
+        if(code!=200&&code!=206)continue;
+        cJSON *reading=cJSON_ParseWithOpts(out,NULL,true);
+        const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reading,"nonce"));
+        const char *state=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reading,"state"));
+        if(!id||strcmp(id,nonce)||!state){cJSON_Delete(reading);continue;}
+        if(strcmp(state,"verified")){cJSON_Delete(reading);error="Muse's allowance tool was unavailable.";break;}
+        const cJSON *used=cJSON_GetObjectItemCaseSensitive(reading,"used"),*stamp=cJSON_GetObjectItemCaseSensitive(reading,"observed_at");
+        const char *reset=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reading,"reset"));
+        char month[4]={0};unsigned day=0;int end=0;
+        bool valid=integer(used,0,100)&&cJSON_IsNumber(stamp)&&stamp->valuedouble>=1700000000.&&stamp->valuedouble<4102444800.&&
+            floor(stamp->valuedouble)==stamp->valuedouble&&reset&&strlen(reset)<=6&&
+            sscanf(reset,"%3[A-Za-z] %u%n",month,&day,&end)==2&&reset[end]==0&&day>=1&&day<=31;
+        if(!valid){cJSON_Delete(reading);error="Muse returned an invalid reading.";break;}
+        cJSON *payload=cJSON_CreateObject();
+        if(payload){
+            char canonical_reset[8];snprintf(canonical_reset,sizeof(canonical_reset),"%s %u",month,day);
+            cJSON_AddNumberToObject(payload,"used",used->valueint);
+            cJSON_AddStringToObject(payload,"reset",canonical_reset);
+            cJSON_AddNumberToObject(payload,"observed_at",stamp->valuedouble);
+            if(s_usage_prediction.valid){
+                cJSON *prediction=cJSON_AddObjectToObject(payload,"prediction");
+                if(prediction){
+                    cJSON_AddNumberToObject(prediction,"used",s_usage_prediction.used);
+                    cJSON_AddStringToObject(prediction,"reset",s_usage_prediction.reset);
+                }
+            }else cJSON_AddNullToObject(payload,"prediction");
+        }
+        cJSON_Delete(reading);
+        char *encoded=payload?cJSON_PrintUnformatted(payload):NULL;cJSON_Delete(payload);
+        job_t *job=calloc(1,sizeof(*job));if(!job){cJSON_free(encoded);break;}
+        strcpy(job->op,"usageapply");job->text=encoded?strdup(encoded):NULL;cJSON_free(encoded);
+        if(job->text&&xQueueSend(s_jobs,&job,0)==pdTRUE){vTaskDeleteWithCaps(NULL);return;}
+        free(job->text);free(job);error="Device is busy. Retry in a moment.";break;
+    }
+done:
+    usage_outcome("error",error);vTaskDeleteWithCaps(NULL);
+}
+
 bool muse_memory_usage_check(void)
 {
-    if(!s_mutex)return false;
-    job_t *j=calloc(1,sizeof(*j));if(!j)return false;
-    strcpy(j->op,"usagecheck");return enqueue(j);
+    if(!s_mutex||!s_jobs)return false;
+    xSemaphoreTake(s_mutex,portMAX_DELAY);
+    if(s_usage.refresh_pending){xSemaphoreGive(s_mutex);return false;}
+    s_usage_prediction.valid=s_usage.valid;s_usage_prediction.used=s_usage.used;
+    strlcpy(s_usage_prediction.reset,s_usage.reset,sizeof(s_usage_prediction.reset));
+    s_usage.refresh_pending=true;
+    strlcpy(s_usage.refresh_state,"checking",sizeof(s_usage.refresh_state));
+    strlcpy(s_usage.refresh_note,"Muse is checking the weekly allowance.",sizeof(s_usage.refresh_note));
+    xSemaphoreGive(s_mutex);
+    if(xTaskCreatePinnedToCoreWithCaps(usage_worker,"muse_usage",6144,NULL,2,NULL,tskNO_AFFINITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS)return true;
+    usage_outcome("error","Device is busy. Retry in a moment.");return false;
 }
 bool muse_memory_recorder_action(const char *op,unsigned page,unsigned level){
  if(!s_mutex || !op || (strcmp(op,"recstart")&&strcmp(op,"recstop")&&strcmp(op,"recstatus")&&strcmp(op,"recpage")&&strcmp(op,"recprev")&&strcmp(op,"recnext")))return false;
@@ -105,6 +253,23 @@ bool muse_memory_recorder_action(const char *op,unsigned page,unsigned level){
  if(!strcmp(op,"recstart")){xSemaphoreTake(s_mutex,portMAX_DELAY);if(s_recorder.active||s_recorder_starting){xSemaphoreGive(s_mutex);free(j);return false;}s_recorder_starting=true;strlcpy(s_recorder.note,"Preparing local recording...",96);xSemaphoreGive(s_mutex);}
  if(!strcmp(op,"recprev")||!strcmp(op,"recnext")){xSemaphoreTake(s_mutex,portMAX_DELAY);s_recorder.text[0]=0;xSemaphoreGive(s_mutex);}
  bool ok=enqueue(j);if(!ok && !strcmp(op,"recstart")){xSemaphoreTake(s_mutex,portMAX_DELAY);s_recorder_starting=false;xSemaphoreGive(s_mutex);}return ok;
+}
+bool muse_memory_sd_action(const char *action,const char *token,const char *name)
+{
+    if(!s_mutex || !action || strlen(action)>=25 || (token && strlen(token)>=33) || (name && strlen(name)>96))return false;
+    job_t *job=calloc(1,sizeof(*job));
+    if(!job)return false;
+    strcpy(job->op,"sd");strcpy(job->key,action);
+    if(token)strcpy(job->chat,token);
+    if(name && !(job->text=strdup(name))){free(job);return false;}
+    xSemaphoreTake(s_mutex,portMAX_DELAY);
+    bool accepted=!s_sd_inflight && (!s_sd.busy || !strcmp(action,"status"));
+    if(accepted)s_sd_inflight=true;
+    xSemaphoreGive(s_mutex);
+    if(!accepted){free(job->text);free(job);return false;}
+    if(enqueue(job))return true;
+    xSemaphoreTake(s_mutex,portMAX_DELAY);s_sd_inflight=false;xSemaphoreGive(s_mutex);
+    return false;
 }
 bool muse_memory_action(const char *op,const char *chat,unsigned page)
 {
@@ -135,6 +300,15 @@ bool muse_memory_copy(muse_memory_view_t *out,char *text,size_t cap)
 }
 static void finish(bool ok,const char *message)
 {
+    if(s_job && !strcmp(s_job->op,"sd")){
+        xSemaphoreTake(s_mutex,portMAX_DELAY);
+        s_sd_inflight=false;
+        if(!ok){s_sd.busy=false;s_sd.token[0]=s_sd.confirm[0]=0;strlcpy(s_sd.note,message?message:"Module did not confirm; tap Refresh",sizeof(s_sd.note));s_sd.version++;}
+        xSemaphoreGive(s_mutex);message=NULL;
+    }
+    if(s_job && !strcmp(s_job->op,"usageapply")){
+        usage_outcome(ok?"done":"error",ok?"Muse reading updated.":"Module could not apply the reading.");message=NULL;
+    }
     if(s_job && !strncmp(s_job->op,"rec",3)){
         xSemaphoreTake(s_mutex,portMAX_DELAY);
         if(!strcmp(s_job->op,"recstart")){if(!ok && !s_waiting)s_recorder.active=true;s_recorder_starting=false;}
@@ -171,6 +345,14 @@ void muse_memory_tick(const char *session,bool idle)
     }
     if(!s_job){
         if(xQueueReceive(s_jobs,&s_job,0)!=pdTRUE){
+            int64_t now=esp_timer_get_time();
+            if(now>=s_usage_auto_due&&muse_link_req_ready()){
+                s_usage_auto_due=now+600000000LL;
+                muse_usage_view_t account={0};
+                bool valid=muse_memory_usage_copy(&account);
+                uint32_t age=account.age+((uint32_t)(now/1000)-account.received_ms)/1000;
+                if((!valid||age>=86400)&&muse_memory_usage_check())s_usage_auto_due=now+86400000000LL;
+            }
             if(esp_timer_get_time()<s_usage_poll)return;
             s_usage_poll=esp_timer_get_time()+60000000;
             s_job=calloc(1,sizeof(*s_job));if(!s_job)return;strcpy(s_job->op,"usage");
@@ -189,7 +371,11 @@ void muse_memory_tick(const char *session,bool idle)
     cJSON_AddStringToObject(d,"op",s_job->op);
     if(!strcmp(s_job->op,"delete"))cJSON_AddBoolToObject(d,"confirm",true);
     if(!strcmp(s_job->op,"rename"))cJSON_AddStringToObject(d,"token",s_job->title_token);
-    if(s_job->chat[0])cJSON_AddStringToObject(d,"chat",s_job->chat);
+    if(!strcmp(s_job->op,"sd")){
+        cJSON_AddStringToObject(d,"sd_action",s_job->key);
+        if(s_job->chat[0])cJSON_AddStringToObject(d,"token",s_job->chat);
+        if(s_job->text)cJSON_AddStringToObject(d,"name",s_job->text);
+    }else if(s_job->chat[0])cJSON_AddStringToObject(d,"chat",s_job->chat);
     cJSON_AddNumberToObject(d,"page",s_job->page);
     cJSON_AddNumberToObject(d,"offset",!strcmp(s_job->op,"list")?s_job->page:s_job->offset);
     if(!strcmp(s_job->op,"put")){
@@ -198,11 +384,48 @@ void muse_memory_tick(const char *session,bool idle)
         cJSON_AddStringToObject(d,"key",s_job->key);cJSON_AddStringToObject(d,"role",s_job->user?"user":"assistant");
         cJSON_AddStringToObject(d,"part",part);cJSON_AddBoolToObject(d,"finish",!s_job->text[s_job->offset+s_sent_bytes]);
     }else if(!strcmp(s_job->op,"context"))cJSON_AddStringToObject(d,"query",s_job->text?s_job->text:"");
+    else if(!strcmp(s_job->op,"usageapply"))cJSON_AddItemToObject(d,"observation",cJSON_Parse(s_job->text));
     char *json=cJSON_PrintUnformatted(root);cJSON_Delete(root);
     if(!json){finish(false,"Archive memory unavailable");return;}
 
     bool sent=muse_module_llm_send_line(json);
     cJSON_free(json);s_waiting=true;s_deadline=esp_timer_get_time()+(sent?8000000LL:100000LL);
+}
+static void sd_text(const cJSON *object,const char *key,char *out,size_t size)
+{
+    const char *value=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(object,key));
+    strlcpy(out,value && strlen(value)<size ? value : "",size);
+}
+static unsigned sd_number(const cJSON *object,const char *key)
+{
+    const cJSON *value=cJSON_GetObjectItemCaseSensitive(object,key);
+    return integer(value,0,1000000000)?value->valueint:0;
+}
+static bool sd_flag(const cJSON *object,const char *key)
+{return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(object,key));}
+static bool sd_reply(const cJSON *result)
+{
+    const cJSON *sd=cJSON_GetObjectItemCaseSensitive(result,"sd");
+    const cJSON *items=cJSON_GetObjectItemCaseSensitive(sd,"items");
+    if(!cJSON_IsObject(sd) || !cJSON_IsArray(items))return false;
+    xSemaphoreTake(s_mutex,portMAX_DELAY);
+    s_sd.version++;
+    s_sd.busy=sd_flag(sd,"busy");s_sd.mounted=sd_flag(sd,"mounted");s_sd.writable=sd_flag(sd,"writable");
+    s_sd.formattable=sd_flag(sd,"format");s_sd.more=sd_flag(sd,"more");
+    s_sd.page=sd_number(sd,"page");s_sd.count=sd_number(sd,"count");s_sd.total_mb=sd_number(sd,"total_mb");
+    s_sd.free_mb=sd_number(sd,"free_mb");s_sd.done=sd_number(sd,"done");s_sd.total=sd_number(sd,"total");
+    sd_text(sd,"state",s_sd.state,sizeof(s_sd.state));sd_text(sd,"note",s_sd.note,sizeof(s_sd.note));
+    sd_text(sd,"path",s_sd.path,sizeof(s_sd.path));sd_text(sd,"token",s_sd.token,sizeof(s_sd.token));
+    sd_text(sd,"confirm",s_sd.confirm,sizeof(s_sd.confirm));sd_text(sd,"detail",s_sd.detail,sizeof(s_sd.detail));
+    sd_text(sd,"moving",s_sd.moving,sizeof(s_sd.moving));
+    for(unsigned i=0;i<MUSE_SD_ROWS;i++){
+        const cJSON *item=cJSON_GetArrayItem(items,i);
+        s_sd.items[i].folder=sd_flag(item,"folder");
+        sd_text(item,"name",s_sd.items[i].name,sizeof(s_sd.items[i].name));
+        sd_text(item,"token",s_sd.items[i].token,sizeof(s_sd.items[i].token));
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
 }
 bool muse_memory_reply(const cJSON *root,const char *session)
 {
@@ -220,6 +443,7 @@ bool muse_memory_reply(const cJSON *root,const char *session)
     const cJSON *code=cJSON_GetObjectItemCaseSensitive(error,"code");
     if(!cJSON_IsNumber(code) || code->valueint){
         if(!strcmp(s_job->op,"usage")){finish(false,NULL);return true;}
+        if(!strcmp(s_job->op,"sd")){finish(false,"Card service unavailable; tap Refresh");return true;}
         s_request[0]=0;
         if(!strcmp(s_job->op,"put") && s_job->offset && !s_job->restarted){s_job->offset=0;s_job->restarted=true;s_waiting=false;return true;}
         finish(false,"Archive could not finish; try again");return true;
@@ -227,6 +451,7 @@ bool muse_memory_reply(const cJSON *root,const char *session)
     const cJSON *r=cJSON_GetObjectItemCaseSensitive(d,"result");
     if(!cJSON_IsObject(r))return true;
     s_waiting=false;s_request[0]=0;s_job->retries=0;
+    if(!strcmp(s_job->op,"sd")){finish(sd_reply(r),NULL);return true;}
     bool rec_valid=false;
     const cJSON *rec=cJSON_GetObjectItemCaseSensitive(r,"recorder");
     if(cJSON_IsObject(rec)){
@@ -244,25 +469,27 @@ bool muse_memory_reply(const cJSON *root,const char *session)
         bool safe=true;for(const char *p=reset;*p;p++)if(*p<32 || *p>126)safe=false;for(const char *p=checked;*p;p++)if(*p<32 || *p>126)safe=false;
         if(safe){
             xSemaphoreTake(s_mutex,portMAX_DELAY);s_usage.valid=true;s_usage.used=used->valueint;s_usage.observed=observed->valueint;s_usage.age=age->valueint;s_usage.received_ms=(uint32_t)(esp_timer_get_time()/1000);
-            s_usage.learned=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"learned"));s_usage.pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"pending"));strlcpy(s_usage.reset,reset,sizeof(s_usage.reset));strlcpy(s_usage.checked,checked,sizeof(s_usage.checked));xSemaphoreGive(s_mutex);
+            s_usage.learned=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"learned"));s_usage.pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"pending"));strlcpy(s_usage.reset,reset,sizeof(s_usage.reset));strlcpy(s_usage.checked,checked,sizeof(s_usage.checked));
+            const cJSON *accuracy=cJSON_GetObjectItemCaseSensitive(u,"accuracy");
+            const cJSON *count=cJSON_GetObjectItemCaseSensitive(accuracy,"count"),*miss=cJSON_GetObjectItemCaseSensitive(accuracy,"latest_error_pp"),*mae=cJSON_GetObjectItemCaseSensitive(accuracy,"recent_mae_tenths");
+            s_usage.accuracy_count=integer(count,0,120)?count->valueint:0;
+            s_usage.accuracy_valid=integer(miss,-100,100);
+            s_usage.accuracy_miss=s_usage.accuracy_valid?miss->valueint:0;
+            s_usage.accuracy_mae=integer(mae,0,1000)?mae->valueint:0;
+            xSemaphoreGive(s_mutex);
         }
     }
     const cJSON *refresh=cJSON_GetObjectItemCaseSensitive(r,"usage_refresh");
-    if(!cJSON_IsObject(refresh)){xSemaphoreTake(s_mutex,portMAX_DELAY);s_usage.refresh_supported=false;s_usage.refresh_pending=false;xSemaphoreGive(s_mutex);}
     if(cJSON_IsObject(refresh)){
-        const char *note=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(refresh,"note"));
         const char *sync=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(refresh,"last_sync"));
-        const char *phase=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(refresh,"status")),*identity=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(refresh,"id"));
-        bool phase_ok=phase && (!strcmp(phase,"idle")||!strcmp(phase,"queued")||!strcmp(phase,"checking")||!strcmp(phase,"done")||!strcmp(phase,"error"));
-        bool id_ok=identity && strlen(identity)<=32;
-        if(id_ok)for(const char *p=identity;*p;p++)if(!((*p>='0'&&*p<='9')||(*p>='a'&&*p<='f')))id_ok=false;
-        if(note && sync && strlen(note)<96 && strlen(sync)<32){
-            bool safe=true;for(const char *p=note;*p;p++)if(*p<32 || *p>126)safe=false;
+        if(sync && strlen(sync)<32){
+            bool safe=true;
             for(const char *p=sync;*p;p++)if(*p<32 || *p>126)safe=false;
-            if(safe){xSemaphoreTake(s_mutex,portMAX_DELAY);s_usage.refresh_supported=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(refresh,"supported"));s_usage.refresh_pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(refresh,"pending"));strlcpy(s_usage.refresh_note,note,96);strlcpy(s_usage.last_sync,sync,32);strlcpy(s_usage.refresh_state,phase_ok?phase:"idle",12);strlcpy(s_usage.refresh_id,id_ok?identity:"",33);xSemaphoreGive(s_mutex);}
+            if(safe){xSemaphoreTake(s_mutex,portMAX_DELAY);strlcpy(s_usage.last_sync,sync,32);xSemaphoreGive(s_mutex);}
         }
     }
-    if(!strcmp(s_job->op,"usage") || !strcmp(s_job->op,"usagecheck")){finish(true,NULL);return true;}
+    if(!strcmp(s_job->op,"usageapply")){finish(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r,"paired_applied")),NULL);return true;}
+    if(!strcmp(s_job->op,"usage")){finish(true,NULL);return true;}
     const char *cid=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(r,"chat"));
     if(cid && strlen(cid)==32 && !s_job->chat[0])strlcpy(s_job->chat,cid,sizeof(s_job->chat));
     if(!strcmp(s_job->op,"put")){

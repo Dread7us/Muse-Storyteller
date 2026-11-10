@@ -1369,7 +1369,7 @@ static void playback_button_tick(void)
         if(action==7 && s_playback_test_volume>=0){muse_settings_ui_bench_volume(s_playback_test_volume,true);s_playback_test_volume=-1;}
         muse_module_llm_status(&st);
         printf("@startup {\"enabled\":%s,\"visible\":%s,\"version\":\"%s\"}\n",muse_settings_startup_splash()?"true":"false",muse_startup_visible()?"true":"false",MUSE_STORYTELLER_VERSION);
-        printf("@loading_ui {\"visible\":%s,\"remaining_percent\":%u,\"seconds\":%u,\"late\":%s}\n",s_loading_visible?"true":"false",s_loading_view.percent,s_loading_view.seconds,s_loading_view.late?"true":"false");
+        printf("@loading_ui {\"visible\":%s,\"progress_percent\":%d,\"remaining_percent\":%u,\"seconds\":%u,\"late\":%s}\n",s_loading_visible?"true":"false",s_loading_bar?(int)lv_bar_get_value(s_loading_bar):0,100u-s_loading_view.progress_percent,s_loading_view.seconds,s_loading_view.late?"true":"false");
         printf("@playback_ui {\"speaker\":%s,\"restart_available\":%s,\"transport_busy\":%s,\"brightness\":%d,\"speed\":%d,\"paused\":%s,\"requested\":%s,\"visible\":%s,\"reader_size\":%d,\"settings\":%s,\"subpage\":%s,\"volume\":%d,\"preview_volume\":%d,\"touch_presses\":%lu}\n",muse_settings_speaker_on()?"true":"false",muse_chat_playback_can_restart()?"true":"false",muse_chat_playback_busy()?"true":"false",muse_settings_brightness(),muse_settings_speech_speed(),st.paused?"true":"false",st.pause_requested?"true":"false",visible?"true":"false",s_conversation_size_mode,s_tv && lv_tileview_get_tile_active(s_tv)==s_settings?"true":"false",muse_settings_ui_in_subpage()?"true":"false",muse_settings_volume(),s_preview_volume,(unsigned long)s_touch_presses);fflush(stdout);
         uint32_t model_version=0;unsigned model_count=0;size_t model_bytes=0;muse_conversation_diagnostic(&model_version,&model_count,&model_bytes);
         printf("@conversation_ui {\"version\":%lu,\"count\":%u,\"bytes\":%u,\"shown_version\":%lu,\"rendered_chars\":%u,\"touching\":%s,\"preview\":%s,\"archive\":%s}\n",(unsigned long)model_version,model_count,(unsigned)model_bytes,(unsigned long)s_conversation_version,(unsigned)s_reader_point_count,s_indev&&lv_indev_get_state(s_indev)==LV_INDEV_STATE_PRESSED?"true":"false",s_conversation_preview?"true":"false",s_archive_visible?"true":"false");fflush(stdout);
@@ -1395,10 +1395,7 @@ void muse_ui_usage_update(int remaining_pct,int reset_after_s,unsigned valid_for
 }
 static lv_obj_t *s_usage_popup_body,*s_usage_check_button,*s_usage_check_label;
 static lv_obj_t *s_usage_value,*s_usage_meter,*s_usage_reading,*s_usage_synced,*s_usage_result;
-static bool s_usage_popup_open,s_usage_local_pending,s_usage_failed;
-static uint32_t s_usage_request_at,s_usage_wait_at;
-static bool s_usage_waiting;
-static char s_usage_before_id[33];
+static bool s_usage_popup_open;
 static uint32_t s_usage_popup_at,s_usage_popup_query;
 static void usage_popup_tick(void)
 {
@@ -1407,51 +1404,46 @@ static void usage_popup_tick(void)
     if((int32_t)(now-s_usage_popup_at)<250)return;
     s_usage_popup_at=now;
     muse_usage_view_t account={0};bool valid=muse_memory_usage_copy(&account);
-    if(s_usage_local_pending && account.refresh_id[0] && strcmp(account.refresh_id,s_usage_before_id))s_usage_local_pending=false;
-    if(s_usage_local_pending && now-s_usage_request_at>180000){s_usage_local_pending=false;s_usage_failed=true;}
-    if(account.refresh_pending){if(!s_usage_waiting){s_usage_wait_at=now;s_usage_waiting=true;}if(now-s_usage_wait_at>180000)s_usage_failed=true;}else s_usage_waiting=false;
-    if(s_usage_failed && !strcmp(account.refresh_state,"done") && account.refresh_id[0] && strcmp(account.refresh_id,s_usage_before_id))s_usage_failed=false;
-    bool pending=(account.refresh_pending || s_usage_local_pending) && !s_usage_failed;
-    if(now-s_usage_popup_query>(pending?2000:10000)){s_usage_popup_query=now;muse_memory_usage_poll();}
+    bool pending=account.refresh_pending;
+    bool failed=!strcmp(account.refresh_state,"error");
+    if(now-s_usage_popup_query>10000){s_usage_popup_query=now;muse_memory_usage_poll();}
     char text[160];
     if(valid)snprintf(text,sizeof(text),"%u%% left*",100-account.used);else strlcpy(text,"No reading yet",sizeof(text));
     if(strcmp(text,lv_label_get_text(s_usage_value)))lv_label_set_text(s_usage_value,text);
     lv_bar_set_value(s_usage_meter,valid?100-account.used:0,LV_ANIM_OFF);
-    if(valid)snprintf(text,sizeof(text),"Website: %u%% used  /  Resets %s",account.observed,account.reset);else strlcpy(text,"Check Muse to get your first reading",sizeof(text));
+    if(valid)snprintf(text,sizeof(text),"Muse: %u%% used  /  Resets %s",account.observed,account.reset);else strlcpy(text,"Check Muse to get your first reading",sizeof(text));
     if(strcmp(text,lv_label_get_text(s_usage_reading)))lv_label_set_text(s_usage_reading,text);
     snprintf(text,sizeof(text),"Last sync: %s",account.last_sync[0]?account.last_sync:valid?account.checked:"Never");
     if(strcmp(text,lv_label_get_text(s_usage_synced)))lv_label_set_text(s_usage_synced,text);
-    const char *result="Check via your PC";unsigned color=0xc1ade3;
-    if(s_usage_failed){result="Not updated - saved reading kept";color=0xffab48;}
-    else if(s_usage_local_pending)result="Sending request...";
-    else if(!strcmp(account.refresh_state,"queued"))result="Waiting for PC + Chrome...";
-    else if(!strcmp(account.refresh_state,"checking"))result="Reading Muse in Chrome...";
-    else if(s_usage_failed || !strcmp(account.refresh_state,"error")){result="Not updated - saved reading kept";color=0xffab48;}
-    else if(!strcmp(account.refresh_state,"done")){result=LV_SYMBOL_OK " Synced successfully";color=0x5ff0b9;}
+    const char *result="Ready to check over Wi-Fi";unsigned color=0xc1ade3;
+    if(failed){result="Check failed | saved reading kept";color=0xffab48;}
+    else if(pending)result="Checking with Muse...";
+    else if(!strcmp(account.refresh_state,"done")){result=LV_SYMBOL_OK " Muse reading updated";color=0x5ff0b9;}
     if(strcmp(result,lv_label_get_text(s_usage_result)))lv_label_set_text(s_usage_result,result);
     lv_obj_set_style_text_color(s_usage_result,lv_color_hex(color),0);
-    const char *help="*Estimate works without PC. Live sync:\nPC + signed-in Chrome + Module USB.";
-    if(s_usage_failed)help="Module did not reply. Check its power\nand USB, then retry. Saved reading kept.";
-    else if(!strcmp(account.refresh_state,"error")){
-        if(strstr(account.refresh_note,"Sign in"))help="Sign in to Muse in PC Chrome,\nthen retry. Saved reading kept.";
-        else if(strstr(account.refresh_note,"card"))help="Could not read Muse's usage page.\nOpen Muse in PC Chrome, then retry.";
-        else if(strstr(account.refresh_note,"sync failed"))help="Website read; device sync failed.\nCheck Module USB, then retry.";
-        else help="Connect Module USB and open Chrome\non your PC, then retry.";
+    const char *help="*Estimated between checks.\nMuse checks daily when online.";
+    char accuracy_help[96];
+    if(account.accuracy_valid){
+        int miss=account.accuracy_miss;
+        char last[40];
+        if(miss)snprintf(last,sizeof(last),"Last check: %d pts %s",abs(miss),miss<0?"low":"high");
+        else strlcpy(last,"Last check matched",sizeof(last));
+        unsigned sample_count=account.accuracy_count>5?5:account.accuracy_count;
+        snprintf(accuracy_help,sizeof(accuracy_help),"%s\n*Avg miss %.1f pts (%u)",last,account.accuracy_mae/10.0,sample_count);
+        help=accuracy_help;
     }
+    if(failed&&account.refresh_note[0])help=account.refresh_note;
+    else if(pending)help="The saved reading stays visible\nuntil Muse replies.";
     if(strcmp(help,lv_label_get_text(s_usage_popup_body)))lv_label_set_text(s_usage_popup_body,help);
-    const char *name=pending?"Checking...":s_usage_failed||!strcmp(account.refresh_state,"error")?"Retry via PC":"Sync via PC";
+    const char *name=pending?"Checking...":failed?"Retry check":"Check now";
     if(strcmp(name,lv_label_get_text(s_usage_check_label)))lv_label_set_text(s_usage_check_label,name);
     if(account.refresh_supported && !pending)lv_obj_remove_state(s_usage_check_button,LV_STATE_DISABLED);else lv_obj_add_state(s_usage_check_button,LV_STATE_DISABLED);
 }
 static void usage_check_clicked(lv_event_t *e)
 {
     (void)e;muse_state_poke();
-    muse_usage_view_t before={0};muse_memory_usage_copy(&before);
-    if(!s_usage_check_button || s_usage_local_pending || (before.refresh_pending&&!s_usage_failed))return;
-    if(muse_memory_usage_check()){
-        s_usage_failed=false;s_usage_waiting=true;s_usage_wait_at=(uint32_t)(esp_timer_get_time()/1000);s_usage_local_pending=true;s_usage_request_at=(uint32_t)(esp_timer_get_time()/1000);strlcpy(s_usage_before_id,before.refresh_id,sizeof(s_usage_before_id));
-        s_usage_popup_at=0;usage_popup_tick();
-    }else{s_usage_failed=true;s_usage_popup_at=0;usage_popup_tick();}
+    if(!s_usage_check_button)return;
+    muse_memory_usage_check();s_usage_popup_at=0;usage_popup_tick();
 }
 static void status_popup_close(lv_event_t *e)
 {
@@ -1477,7 +1469,7 @@ static void status_popup(lv_event_t *e)
         s_usage_popup_open=true;s_usage_popup_at=0;s_usage_popup_query=0;
         s_usage_check_button=lv_button_create(s_status_dialog);lv_obj_set_size(s_usage_check_button,180,32);lv_obj_align(s_usage_check_button,LV_ALIGN_BOTTOM_LEFT,0,0);lv_obj_set_style_bg_color(s_usage_check_button,lv_color_hex(0x623ca0),0);lv_obj_set_style_radius(s_usage_check_button,10,0);
         lv_obj_add_event_cb(s_usage_check_button,usage_check_clicked,LV_EVENT_CLICKED,NULL);
-        s_usage_check_label=make_label(s_usage_check_button,&lv_font_montserrat_14,0xffffff);lv_label_set_text(s_usage_check_label,"Sync via PC");lv_obj_center(s_usage_check_label);
+        s_usage_check_label=make_label(s_usage_check_button,&lv_font_montserrat_14,0xffffff);lv_label_set_text(s_usage_check_label,"Check now");lv_obj_center(s_usage_check_label);
         usage_popup_tick();
 
     }else{
@@ -1820,7 +1812,7 @@ static void conversation_build(lv_obj_t *face)
     archive_build();
     s_loading_panel=lv_obj_create(s_conversation);lv_obj_remove_style_all(s_loading_panel);lv_obj_set_pos(s_loading_panel,9,29);lv_obj_set_size(s_loading_panel,s_w-34,36);
     lv_obj_remove_flag(s_loading_panel,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);lv_obj_add_flag(s_loading_panel,LV_OBJ_FLAG_HIDDEN);
-    s_loading_bar=lv_bar_create(s_loading_panel);lv_obj_remove_style_all(s_loading_bar);lv_obj_set_size(s_loading_bar,s_w-34,23);lv_bar_set_range(s_loading_bar,0,100);lv_bar_set_value(s_loading_bar,100,LV_ANIM_OFF);
+    s_loading_bar=lv_bar_create(s_loading_panel);lv_obj_remove_style_all(s_loading_bar);lv_obj_set_size(s_loading_bar,s_w-34,23);lv_bar_set_range(s_loading_bar,0,100);lv_bar_set_value(s_loading_bar,0,LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_loading_bar,lv_color_hex(0x21152e),0);lv_obj_set_style_bg_opa(s_loading_bar,255,0);lv_obj_set_style_radius(s_loading_bar,6,0);
     lv_obj_set_style_border_width(s_loading_bar,1,0);lv_obj_set_style_border_color(s_loading_bar,lv_color_hex(0x9f7bcf),0);
     lv_obj_set_style_bg_color(s_loading_bar,lv_color_hex(0x51336e),LV_PART_INDICATOR);lv_obj_set_style_bg_opa(s_loading_bar,255,LV_PART_INDICATOR);lv_obj_set_style_radius(s_loading_bar,6,LV_PART_INDICATOR);
@@ -2673,20 +2665,39 @@ static void loading_tick(muse_mode_t mode,float now)
     if(!cloud&&st.state==MUSE_MODULE_LLM_PREPARING){if(!local_at)local_at=elapsed;budget=local_at+muse_wait_budget(model,0);}
     if(rebuffering)budget=muse_wait_budget(model,18);
     s_loading_view=muse_wait_countdown(&countdown,elapsed,budget,speaking);
+    bool sectional=cloud&&p.sections_total>0;
+    if(sectional){
+        s_loading_view.progress_percent=100*p.sections_ready/p.sections_total;
+        s_loading_view.seconds=0;s_loading_view.late=false;
+    }
     const char *step="Waiting for Muse";
     if(st.state==MUSE_MODULE_LLM_PREPARING)step=cloud&&p.opening_ready_ms?"Buffering next sentence":"Preparing local voice";
     if(cloud&&p.source_ready_ms&&!rebuffering)step=p.detail==2?"Downloading audio":p.detail==3?"Checking audio":"Creating and timing voice";
     if(cloud&&p.phase==7)step="Reconnecting audio";
     char text[96],note[96];
-    if(speaking){strlcpy(text,"Ready to play | 0% left",sizeof(text));strlcpy(note,"Opening audio checked and buffered",sizeof(note));}
-    else if(paused){strlcpy(text,"Paused | waiting to continue",sizeof(text));snprintf(note,sizeof(note),"%u%% left | estimate paused",s_loading_view.percent);}
+    if(sectional){
+        const char *voice=muse_settings_muse_voice()==1?"Aria":"Helio";
+        unsigned part=p.sections_ready+1;
+        if(speaking)strlcpy(text,"Playing verified audio",sizeof(text));
+        else if(paused)strlcpy(text,"Paused | waiting to continue",sizeof(text));
+        else if(p.phase==7)snprintf(text,sizeof(text),"Reconnecting audio | try %u",p.recoveries);
+        else if(p.sections_ready>=p.sections_total)strlcpy(text,"Finishing audio checks",sizeof(text));
+        else if(p.detail==MUSE_NATIVE_SECTION_PIPER)snprintf(text,sizeof(text),"Piper filling section %u",part);
+        else if(p.detail==MUSE_NATIVE_SECTION_RECHECKING)snprintf(text,sizeof(text),"Rechecking %s | section %u",voice,part);
+        else if(p.detail==MUSE_NATIVE_SECTION_DOWNLOADING)snprintf(text,sizeof(text),"Downloading section %u",part);
+        else if(p.detail==MUSE_NATIVE_SECTION_CHECKING)snprintf(text,sizeof(text),"Checking section %u",part);
+        else snprintf(text,sizeof(text),"Waiting for %s | section %u",voice,part);
+        snprintf(note,sizeof(note),"%u/%u sections ready",p.sections_ready,p.sections_total);
+    }
+    else if(speaking){strlcpy(text,"Ready to play | 100%",sizeof(text));strlcpy(note,"Opening audio checked and buffered",sizeof(note));}
+    else if(paused){strlcpy(text,"Paused | waiting to continue",sizeof(text));snprintf(note,sizeof(note),"%u%%* | estimate paused",s_loading_view.progress_percent);}
     else{
         if(s_loading_view.late)snprintf(text,sizeof(text),"%s | %us elapsed",step,(unsigned)elapsed);
         else snprintf(text,sizeof(text),"%s | ~%us",step,s_loading_view.seconds);
-        if(cloud&&p.words_total)snprintf(note,sizeof(note),"%u%% left* | %u words | %u/%u parts",s_loading_view.percent,p.words_total,p.sections_ready,p.sections_total);
-        else snprintf(note,sizeof(note),"%u%% left* | %s",s_loading_view.percent,s_loading_view.late?"Taking longer than estimated":"Estimated; waiting for reply");
+        if(cloud&&p.words_total)snprintf(note,sizeof(note),"%u%%* | %u words | %u/%u parts",s_loading_view.progress_percent,p.words_total,p.sections_ready,p.sections_total);
+        else snprintf(note,sizeof(note),"%u%%* | %s",s_loading_view.progress_percent,s_loading_view.late?"Taking longer than estimated":"Estimated progress");
     }
-    if(lv_bar_get_value(s_loading_bar)!=(int)s_loading_view.percent)lv_bar_set_value(s_loading_bar,s_loading_view.percent,LV_ANIM_OFF);
+    if(lv_bar_get_value(s_loading_bar)!=(int)s_loading_view.progress_percent)lv_bar_set_value(s_loading_bar,s_loading_view.progress_percent,LV_ANIM_OFF);
     if(strcmp(lv_label_get_text(s_loading_text),text))lv_label_set_text(s_loading_text,text);
     if(strcmp(lv_label_get_text(s_loading_note),note))lv_label_set_text(s_loading_note,note);
 }
@@ -2722,7 +2733,7 @@ static void update_status(muse_mode_t mode, float now)
     muse_module_llm_status_t playback_status;muse_module_llm_status(&playback_status);
     muse_native_voice_status_t native;muse_native_voice_status(&native);
     if(native.active && mode==MUSE_MODE_THINKING){
-        if(native.phase==7)snprintf(preparing_label,sizeof(preparing_label),"RECOVERING VOICE %u/2",native.recoveries);
+        if(native.phase==7)snprintf(preparing_label,sizeof(preparing_label),"RECOVERING VOICE");
         else if(native.phase==2 && native.total)snprintf(preparing_label,sizeof(preparing_label),"MUSE AUDIO %u%%",(unsigned)((uint64_t)native.received*100/native.total));
         else if(native.phase==2)snprintf(preparing_label,sizeof(preparing_label),"BUFFERING VOICE %uKB",native.received/1024);
         else if(native.phase==3)snprintf(preparing_label,sizeof(preparing_label),"CHECKING AUDIO");
@@ -2731,6 +2742,7 @@ static void update_status(muse_mode_t mode, float now)
         name=preparing_label;
     }
     if(!native.active && native.phase==5 && mode==MUSE_MODE_IDLE && muse_settings_voice_source()==1 && muse_chat_playback_can_restart())name=muse_native_voice_error_title();
+    if(playback_status.state==MUSE_MODULE_LLM_SPEAKING&&playback_status.offline_line)name="OFFLINE LINE";
     if(playback_status.pause_requested)name=playback_status.paused?"PAUSED":"PAUSING";
     else if(playback_status.paused)name="RESUMING";
     if(muse_memory_recorder_active())name="RECORDING";

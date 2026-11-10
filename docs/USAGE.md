@@ -1,33 +1,53 @@
 # Muse allowance: estimate versus sync
 
-The Module keeps a local estimate anchored to the last verified website percentage.
-It can learn a rough percentage-per-character rate from later observations. This is
-**not Muse’s billing formula** and does not account for every other client between checks.
+The Module anchors the estimate to the last verified Muse percentage. It counts outgoing
+and incoming characters and outgoing turns from locally saved Muse exchanges. The estimator
+stores only counts and calibration readings. It uses up to 28 recent calibration intervals,
+gives more weight to recent evidence, and keeps learned rates across weekly resets. Small
+unchanged readings can accumulate before they affect the fit, and readings at 100% do not
+train it. Upgraded installations start with their previous combined rate and build new
+directional history from subsequent exchanges.
 
-The popup shows estimated remaining allowance, the last website-used percentage, reset
-label, last successful sync, and an explicit request outcome. A failed check retains the
-last good observation. The estimate continues locally when the device leaves the PC.
+Repeated increases during periods with zero device traffic can support a bounded estimate
+of account activity outside those exchanges. This allowance estimate uses at most one day
+of that projected activity per reading. Muse’s own reading is the source for spending and
+limit decisions. Browser and phone activity, tool work, and provider billing weights can
+still move the verified meter differently from the estimate.
 
-## Fresh website checks
+## Is the estimate improving?
 
-The reference installation used a locally registered Chrome extension/native-messaging
-helper on Windows. A fresh check requires:
+Starting in 0.6.1, each device check takes a snapshot of the displayed percentage before
+the request goes out. When a verified reading arrives, the Module saves both numbers and
+the signed error in percentage points. A negative error means the estimate was low. The
+popup shows the latest comparable result and the mean absolute error of up to five checks.
+The full report compares the most recent five with the preceding five once ten comparable
+checks are available. Lower mean absolute error means smaller misses in that sample.
 
-1. Module LLM connected through its own USB data port.
-2. The existing ADB server; target only the Module’s serial.
-3. Chrome open, signed into the correct Muse account, with the helper configured.
+The report retains up to 120 verified checks locally. The first check without an estimate,
+checks that cross a reset, and older clients that supply only a pre-apply estimate are
+excluded from the trend. Repeated deliveries of the same reading count once. The separate
+desktop alert monitor does not feed these device accuracy records.
 
-The helper opens a new Muse tab, reads only the visible Settings usage card, validates
-that its percentage and reset label agree, applies the observation, then checks that the
-Module acknowledged it. It must not copy browser credentials or infer zero from a loading card.
+On the Module, run `python3 -B /opt/muse-core2-bridge/muse_usage.py --accuracy` to read
+the report. It contains percentages and timestamps. Keep your report private.
 
-This source release includes the Module-side usage queue and estimate, plus optional
-Chrome/native-host helper source. It excludes registered identities, account sessions,
-local configuration and scheduled automation. Without local setup, Sync via PC can time
-out; it is not a standalone Wi-Fi account query. No public, supported direct-usage API
-is claimed here.
+The popup shows estimated remaining allowance, the last confirmed Muse percentage,
+reset date, and last successful sync. A failed check retains the last good observation.
 
-## Optional Windows helper setup
+## Check from the device
+
+Tap **Check now** in Muse account usage. The Core2 asks the paired Muse to use
+its own subscription-status tool in a separate chat and fetches that request’s
+small private result over the existing paired connection. The Module rejects
+stale or invalid results and confirms the applied reading. The device also
+checks when online and idle if its last successful reading is a day old.
+
+The device uses the consumer Muse account already paired to it. Each check is
+a short Muse request that may count toward the account’s allowance. A failed or
+exhausted Muse session leaves the local estimate available with its last sync date.
+The Gadget SDK does not document a direct consumer allowance endpoint.
+
+## Legacy Windows helper setup
 
 Use only one usage helper per Module. Existing installations should keep their working
 helper; do not register a second copy alongside it.
@@ -38,8 +58,8 @@ helper; do not register a second copy alongside it.
    `python tools/setup_chrome_helper.py --extension-id YOUR_EXTENSION_ID --adb PATH_TO_EXISTING_ADB_EXE`.
 3. Review the preview, then repeat with `--register` to create a local native launcher
    and register its per-user Chrome host. Configuration stays in ignored `private/`.
-4. Sign into Muse in Chrome yourself, connect the Module's data port, and use the
-   device's Sync via PC button. Check the explicit success result and timestamp.
+4. On editions through 0.5.11, sign into Muse in Chrome yourself, connect the
+   Module's data port, and use Sync via PC. Check the success result and timestamp.
 
 Registration does not load extensions, sign in, start ADB or change SuperDisplay.
 This portable helper source has not undergone a separate fresh-PC installation test.

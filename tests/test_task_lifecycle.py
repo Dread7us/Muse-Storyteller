@@ -9,6 +9,7 @@ def harness():
     done=source[source.index('static void message_done('):source.index('static const char *msg_id(')]
     binding=source[source.index('static int find_msg('):source.index('static void append_text(')]
     events=source[source.index('static const char *msg_id('):source.index('static void on_chat_ack(')]
+    voice_selection=source[source.index('static void honor_offline_voice_selection('):source.index('#endif\n\nstatic void start_tts(')]
     restart=source[source.index('static void restart_reply('):source.index('static void handle(')]
     check=source[source.index('static void check_turn(void)'):source.index('/* ---- Inbound dispatch ---- */')]
     drain=source[source.index('    if (playback == MUSE_MODULE_LLM_PLAYBACK_DONE) {'):source.index('    if (playback == MUSE_MODULE_LLM_PLAYBACK_CANCELLED) {')]
@@ -56,6 +57,8 @@ static char s_final_reply[TEXT_MAX];
 static int64_t s_last_seq=0;
 static int s_pending_reply_msg=-1;
 static bool s_bench_reply=false,s_can_restart=false,s_playback_active=false;
+static int voice_source=1;
+static int muse_settings_voice_source(){return voice_source;}
 static bool s_restart_wait=false,s_transport_pending=false,s_replaying=false,native_rebind_ok=false,sections_pending=false;
 static unsigned s_gen=1,rebound_previous=0,rebound_current=0;
 static char s_reply_shown[128];
@@ -82,7 +85,7 @@ static void muse_module_llm_cancel(unsigned){}
 static void drain_out(){}
 static void append_text(msg_t &m,const char *text){m.len+=strlen(text);strlcat(s_turn.texts+(&m-s_turn.msgs)*TEXT_MAX,text,TEXT_MAX);strlcat(m.tail,text,sizeof(m.tail));}
 static void show_reply_start(const msg_t&){}
-''' + binding + final + done + events + restart + check + '\nstatic void drain(int playback){\n'+drain+'\n}\n'+r'''
+''' + binding + final + done + events + voice_selection + restart + check + '\nstatic void drain(int playback){\n'+drain+'\n}\n'+r'''
 static void reset(){s_turn=turn_t{};memset(text_storage,0,sizeof(text_storage));s_turn.texts=text_storage;clock_us=0;failure.clear();completed=false;conversations=cancels=0;s_pending_reply_msg=-1;s_last_seq=0;s_gen=1;native_rebind_ok=false;sections_pending=false;s_can_restart=false;s_restart_wait=false;s_transport_pending=false;s_replaying=false;rebound_previous=rebound_current=0;}
 static void incoming(const char *kind,int seq,const char *id,const char *text){auto *line=object(),*p=object(),*n=object();n->type=3;n->valuedouble=seq;line->fields["seq"]=n;line->fields["type"]=str("event");line->fields["event"]=str(kind);line->fields["payload"]=p;p->fields["message_id"]=str(id);p->fields["display_text"]=str(text);p->fields["text"]=str(text);on_event(line);}
 static void ack(){strcpy(text_storage,"I am working.");s_turn.msgs[0].done=true;s_turn.msgs[0].len=strlen(text_storage);s_turn.msgs[0].tts=TTS_FINISHED;}
@@ -108,6 +111,8 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];reset();
  else if(c=="cached_direct_restart"){ack();s_can_restart=true;s_turn.native_direct=true;strcpy(s_turn.msgs[0].external_key,"verified-cache");restart_reply();assert(!strcmp(s_turn.msgs[0].external_key,"verified-cache")&&s_turn.msgs[0].tts==TTS_QUEUED&&!rebound_previous);}
  else if(c=="legacy_restart"){ack();s_can_restart=true;s_turn.native_started=true;strcpy(s_turn.native_job,"legacy-job");restart_reply();assert(!s_turn.native_started&&!s_replaying&&s_turn.gen==2);}
  else if(c=="section_restart"){ack();s_can_restart=true;sections_pending=true;s_turn.native_claimed=true;strcpy(s_turn.native_job,"section-job");strcpy(s_turn.msgs[0].external_key,"partial-cache");restart_reply();assert(s_turn.gen==2&&!s_turn.native_claimed&&!s_turn.native_started&&!s_replaying&&!s_turn.msgs[0].external_key[0]&&s_restart_wait&&cancels==1);}
+ else if(c=="offline_switch"){ack();s_turn.msgs[0].tts=TTS_QUEUED;voice_source=0;s_turn.native_started=true;strcpy(s_turn.native_job,"stalled-job");honor_offline_voice_selection();assert(!s_turn.native_job[0]&&!s_turn.native_started&&cancels==1&&s_turn.msgs[0].tts==TTS_QUEUED&&std::string(text_storage)=="I am working.");honor_offline_voice_selection();assert(cancels==1);}
+ else if(c=="offline_restart"){ack();voice_source=0;s_can_restart=true;s_turn.native_direct=true;s_turn.native_started=true;strcpy(s_turn.msgs[0].external_key,"verified-cache");restart_reply();assert(!s_turn.native_direct&&!s_turn.native_started&&!s_turn.msgs[0].external_key[0]&&s_turn.msgs[0].tts==TTS_QUEUED&&!rebound_previous&&cancels==1&&s_restart_wait);}
  else assert(false);
 }
 '''
@@ -141,3 +146,5 @@ class TaskLifecycle(unittest.TestCase):
     def test_running_direct_restart_rebinds_generation(self):self.run_case('buffered_direct_restart')
     def test_cached_direct_restart_keeps_verified_audio(self):self.run_case('cached_direct_restart')
     def test_legacy_restart_keeps_retry_behavior(self):self.run_case('legacy_restart')
+    def test_offline_switch_releases_a_stalled_online_job_without_losing_text(self):self.run_case('offline_switch')
+    def test_offline_restart_does_not_rebind_or_play_cached_online_audio(self):self.run_case('offline_restart')

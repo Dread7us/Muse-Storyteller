@@ -58,6 +58,8 @@ class Refresh:
    s['last_sync']=label
    if s.get('status') not in ('queued','checking'):s.update(status='done',note='Device synced from a website check.')
   return self.snapshot()
+ def paired_sync(self,label):
+  with self.state() as s:s.update(status='done',id='',last_sync=label,note='Muse reading updated over Wi-Fi.')
 
 if __name__=='__main__':
  import sys

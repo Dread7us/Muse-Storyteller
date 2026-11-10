@@ -82,13 +82,6 @@ bool muse_module_llm_send_line(const char *json){
     xSemaphoreGive(s_tx_mutex);free(owned);return ok;
 }
 void muse_module_llm_session(char out[9]){portENTER_CRITICAL(&s_lock);memcpy(out,s_cloud_session,9);portEXIT_CRITICAL(&s_lock);}
-bool muse_module_llm_test_framing_stall(void){
-    muse_native_voice_status_t native;muse_native_voice_status(&native);
-    portENTER_CRITICAL(&s_lock);bool idle=s_ready&&s_diag_op==0;portEXIT_CRITICAL(&s_lock);
-    if(!idle||native.active||muse_memory_recorder_active())return false;
-    // Synthetic incomplete frame has no action/work target and cannot execute.
-    return muse_module_llm_send_line("{\"request_id\":\"framing-test\",\"data\":{\"text\":\"unfinished");
-}
 bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length){
     if(!s_tx_mutex||!json||strncmp(json,"{\"RAW\":",7)||strlen(json)>2048||!data||!length||length>8192)return false;
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
@@ -127,12 +120,17 @@ static void recover_uart_framing(void){
 }
 
 static void recover_ascii_framing(void){
-    // Active native downloads use only brace-safe JSON, never RAW. Close a
-    // partial two-level envelope without flooding the reverse link with the
-    // many error replies needed for legacy binary recovery at startup.
+    // The vendor drops the rest of a read if closing a damaged frame throws.
+    // Send whitespace separately so an unfinished buffer at depth zero can
+    // clear before the next valid packet is sent.
+    static const char close_frame[]="}}}}}}}}";
     xSemaphoreTake(s_tx_mutex,portMAX_DELAY);
-    uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n}}}\n",5);
+    uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,close_frame,sizeof(close_frame)-1);
     uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(20));
+    uart_write_bytes(CONFIG_MUSE_MODULE_LLM_UART_NUM,"\n",1);
+    uart_wait_tx_done(CONFIG_MUSE_MODULE_LLM_UART_NUM,pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(20));
     xSemaphoreGive(s_tx_mutex);
 }
 
@@ -155,6 +153,16 @@ typedef struct {
     char external_key[25];
 } command_t;
 typedef enum { OP_NONE, OP_HELLO, OP_STATUS, OP_LISTEN_BEGIN, OP_LISTEN, OP_LISTEN_END, OP_SPEAK, OP_CANCEL } operation_t;
+bool muse_module_llm_test_framing_stall(bool active_playback){
+    muse_native_voice_status_t native;muse_native_voice_status(&native);
+    portENTER_CRITICAL(&s_lock);
+    bool allowed=s_ready&&!s_cancel_requested&&
+        (active_playback?(s_diag_op==OP_SPEAK&&native.active):(s_diag_op==OP_NONE&&!native.active));
+    portEXIT_CRITICAL(&s_lock);
+    if(!allowed||muse_memory_recorder_active())return false;
+    // Synthetic incomplete frame has no action or work target.
+    return muse_module_llm_send_line("{\"request_id\":\"framing-test\",\"data\":{\"text\":\"unfinished");
+}
 typedef struct {
     muse_llm_framer_t framer;
     operation_t operation;
@@ -425,6 +433,9 @@ static void on_frame(const char *frame, size_t length, void *context)
         } else if (event.kind == MUSE_LLM_EVENT_SPEAKING && r->accepted) {
             if(r->buffering_since){r->deadline+=esp_timer_get_time()-r->buffering_since;r->buffering_since=0;}
             r->speaking = true;
+            portENTER_CRITICAL(&s_lock);
+            s_status.offline_line=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply.data,"offline"));
+            portEXIT_CRITICAL(&s_lock);
             set_playback(MUSE_MODULE_LLM_PLAYBACK_ACTIVE);
             set_status(MUSE_MODULE_LLM_SPEAKING, "SPEAKING...");
         } else if(event.kind==MUSE_LLM_EVENT_BUFFERING && r->accepted){
@@ -571,7 +582,7 @@ if(r->operation==OP_SPEAK && r->accepted){
 }
 }
 
-bool muse_module_llm_recover_idle_link(void){
+bool muse_module_llm_recover_transfer_link(void){
     if(muse_memory_recorder_active())return false;
     portENTER_CRITICAL(&s_lock);unsigned token=++s_recovery_seq;s_recovery_request=token;portEXIT_CRITICAL(&s_lock);
     int64_t deadline=esp_timer_get_time()+3000000LL;
@@ -583,8 +594,9 @@ bool muse_module_llm_recover_idle_link(void){
     portENTER_CRITICAL(&s_lock);if(s_recovery_request==token)s_recovery_request=0;portEXIT_CRITICAL(&s_lock);return false;
 }
 
-static bool transfer_recovery_allowed(unsigned op,bool commands_pending,bool paused){
-    return !commands_pending&&!muse_memory_recorder_active()&&(op==OP_NONE||op==OP_HELLO||op==OP_STATUS||(op==OP_SPEAK&&paused));
+static bool transfer_recovery_allowed(unsigned op,bool commands_pending,bool native_playback){
+    return !commands_pending&&!muse_memory_recorder_active()&&
+        (op==OP_NONE||op==OP_HELLO||op==OP_STATUS||(op==OP_SPEAK&&native_playback));
 }
 
 static void check_deadline(runtime_t *r, int64_t now)
@@ -639,12 +651,12 @@ static void runtime_task(void *unused)
             if(!r.stable_ready_since)r.stable_ready_since=now;
             if(now-r.stable_ready_since>=60000000LL)r.framing_recoveries=0;
         }else r.stable_ready_since=0;
-        portENTER_CRITICAL(&s_lock);unsigned recovery=s_recovery_request;s_recovery_request=0;portEXIT_CRITICAL(&s_lock);
+        portENTER_CRITICAL(&s_lock);unsigned recovery=s_recovery_request;s_recovery_request=0;
+        bool stopping=s_cancel_requested;portEXIT_CRITICAL(&s_lock);
         if(recovery){
-            // A checked ASCII upload can stall while its player is paused.
-            // Permit the same bounded delimiter repair without joining audio
-            // or changing the session. Capture and queued commands still win.
-            bool permitted=transfer_recovery_allowed(r.operation,uxQueueMessagesWaiting(s_commands)>0,r.pause_since!=0);
+            // Delimit only the outgoing JSON parser. Audio, word events and
+            // the existing session can continue during this repair.
+            bool permitted=transfer_recovery_allowed(r.operation,stopping||uxQueueMessagesWaiting(s_commands)>0,r.external_key[0]!=0);
             if(permitted){recover_ascii_framing();ESP_LOGW(TAG,"recovering voice transfer framing");}
             portENTER_CRITICAL(&s_lock);s_recovery_done=recovery;s_recovery_ok=permitted;portEXIT_CRITICAL(&s_lock);
         }

@@ -197,7 +197,7 @@ class Store:
     return {'received':item.received}
    raise NativeAudioError('Unknown native audio operation')
  def _load_series(self,key,text):
-  from muse_narration_series import Series
+  from muse_narration_series import Series,SeriesError
   for path in self.root.parent.glob('*/'+key+'/series.json'):
    try:
     if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():continue
@@ -207,9 +207,10 @@ class Store:
     for i in range(len(value.parts)):value._load_part(i)
     sealed=path.parent/'sealed.json'
     if sealed.exists() and len(value.timings)==len(value.parts):
-     summary=json.loads(sealed.read_text());combined=hashlib.sha256()
-     for i in range(len(value.parts)):combined.update(value.items[i].mp3.read_bytes())
-     value.sealed=summary.get('sha256')==combined.hexdigest()
+     summary=json.loads(sealed.read_text())
+     mixed=summary.get('mode')=='mixed-pcm'
+     try:value.sealed=summary==value.seal_value(mixed)
+     except (OSError,ValueError,KeyError,SeriesError):value.sealed=False
     self.series[key]=value;return value
    except (OSError,ValueError,KeyError,TypeError):continue
   return None

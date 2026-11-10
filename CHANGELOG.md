@@ -1,5 +1,55 @@
 # Release history
 
+## 0.6.1
+
+- Learn the Muse allowance estimate from separate prompt, reply and turn counts. Preserve recent calibration history across weekly resets and account for recurring increases while the device is idle.
+- Save the displayed estimate at the start of each device check and compare it with the verified reading. Show the latest miss and recent average in the usage popup.
+
+## 0.6.0
+
+- Add **Settings → microSD** for Module LLM card capacity, mounting, safe eject, browsing, text previews, folder creation, move, rename and confirmed deletion.
+- Export completed recordings, raw or reviewed transcripts, and a consistent SQLite conversation backup while keeping the device originals. Recorder can export the selected session.
+- Offer confirmed FAT32 formatting on Module images that provide the formatter. Copy mounted-card files to a PC through a Module-only USB connection.
+
+## 0.5.12
+
+- Check the weekly Muse allowance through the device’s existing Wi-Fi pairing, on demand and daily while online. Keep the last confirmed reading when Muse cannot complete a check.
+
+## 0.5.11
+
+- Show verified section counts, Aria availability rechecks, and Piper fallback while buffering.
+- Recover a missing section even when Muse leaves the generation job without a terminal status. Keep checking each later section for verified online audio.
+- Match Piper to the online voice using the shared volume control, including during section-level fallback.
+
+## 0.5.10
+
+- Read any section Muse failed to generate with the installed offline voice and continue with the remaining verified online audio. The device labels the offline section during playback.
+
+## 0.5.9
+
+- Renew the narration retry budget when another verified section completes, so separate interruptions later in a story can each recover.
+
+## 0.5.8
+
+- Check the Module's verified audio before resending a section with a lost confirmation, reducing the wait before narration starts or resumes.
+
+## 0.5.7
+
+- Clear damaged audio-transfer frames in separate steps and retry a lost section-opening acknowledgment sooner.
+
+## 0.5.6
+
+- Recover an interrupted Aria upload during narration and continue from the last acknowledged bytes.
+- Reuse checked sections on retry and remove extra readiness checks from the audio transfer.
+
+## 0.5.5
+
+- Fill the startup and reply loading bars from 0% to 100%, with matching labels. The bars fill completely when the voice is ready.
+
+## 0.5.4
+
+- Honor an Offline voice selection while a Muse reply is buffering. Restart reads the same reply through Piper when Offline is selected.
+
 ## 0.5.3
 
 - Recover a stalled ASCII upload while narration is acknowledged paused, without cancelling audio, changing its position or discarding checked sections.

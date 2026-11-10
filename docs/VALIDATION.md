@@ -74,11 +74,31 @@ the complete built/flashed application checks above refer to the reference insta
 - Local library recall and bounded recent context are not unlimited or perfect memory.
 - AI transcript review is a suggestion. Raw transcription remains available and the
   reviewer can reject or defer uncertain edits.
-- Usage checks are PC-assisted; the local estimate is not authoritative billing data.
+- The local estimate remains approximate between verified Muse allowance checks.
 - There is no auto-rotation feature or claim of a sustained 60 fps on this hardware.
 
 The CI checks source integrity, explicit-command boundaries, portable runtime behavior
 and publication hygiene. It does not record audio, run NPU models, or test a real board.
+
+## Edition 0.6.0 removable storage checks
+
+Portable tests cover folder navigation, rename, move, confirmed deletion, card-swap
+protection during format, exclusion of onboard eMMC, consistent SQLite backups, selected
+transcript export, and recovery from a full card. The tests use temporary files and a
+simulated card. The reference Module's 32 GB FAT card was verified through a read-only view
+of its automatic mount. The application-only Core2 update passed digest, boot, and settings
+checks, and the Module runtime passed readiness and archive integrity checks. In a later
+maintenance check, the card was backed up and formatted as FAT32, then remounted. A synthetic
+export with compressed audio, raw and reviewed transcripts, and a SQLite archive passed
+preview and checksum-verified USB copy checks. The test export was removed afterward.
+
+## Edition 0.6.1 allowance accuracy checks
+
+The reference Core2 image passed application digest, boot, and saved settings checks.
+The Module update preserved its existing allowance anchor and learned rate. Portable tests
+use synthetic readings to verify check-start predictions, repeated deliveries, reset
+boundaries, and equal-sized accuracy comparisons. Live accuracy history builds from
+subsequent verified checks.
 
 ## Edition 0.2.1 startup checks
 

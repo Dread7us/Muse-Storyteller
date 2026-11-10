@@ -17,7 +17,7 @@ class MemoryWorker:
         except queue.Full:self.emit(req['route'],self.response(req,'memory',code=-40,message='Archive busy'))
 
     def run(self):
-        store=None;usage=None;refresh=None;cache=collections.OrderedDict()
+        store=None;usage=None;refresh=None;sd=None;cache=collections.OrderedDict()
         try:
             try:store=Store(self.directory)
             except Exception:pass # archive failure must never stop working voice
@@ -27,31 +27,43 @@ class MemoryWorker:
                 from muse_usage_refresh import Refresh
                 refresh=Refresh()
             except Exception:pass # usage must never impair archive or voice
+            try:
+                from muse_sd import SdWorker
+                sd=SdWorker(self.directory,self.engine.recorder if self.engine else None)
+            except Exception:pass # removable media is optional
             while True:
                 req=self.jobs.get()
                 if req is None:break
                 identity=(req['session'],req['request_id'])
                 signature=json.dumps(req['data'],sort_keys=True)
                 try:
-                    if store is None:raise ValueError('Archive unavailable')
                     if identity in cache:
                         old_signature,reply=cache[identity]
                         if old_signature!=signature:raise ValueError('Archive retry differs')
                     else:
-                        if req['data'].get('op') in ('recstart','recstop','recstatus','recpage','recprev','recnext'):
+                        if req['data'].get('op')=='sd':
+                            if not sd:raise ValueError('microSD support not installed on Module')
+                            result={'sd':sd.submit(req['data'])}
+                        elif store is None:raise ValueError('Archive unavailable')
+                        elif req['data'].get('op') in ('recstart','recstop','recstatus','recpage','recprev','recnext'):
                             if not self.engine:raise ValueError('Recorder support not installed')
                             result={'recorder':self.engine.recorder_command(req)}
+                        elif req['data'].get('op')=='usageapply':
+                            if not usage or not refresh:raise ValueError('Usage storage unavailable')
+                            _,label=usage.calibrate_paired(req['data'].get('observation'))
+                            refresh.paired_sync(label)
+                            result={'paired_applied':True}
                         elif req['data'].get('op') in ('usage','usagecheck'):
                             result={}
                             if refresh and req['data'].get('op')=='usagecheck':refresh.request()
                         else:result=store.handle(req['data'])
-                        if usage:
+                        if usage and 'sd' not in result:
                             try:
                                 if req['data'].get('op')=='put' and req['data'].get('finish'):usage.sync(store.db)
                                 result['usage']=usage.snapshot()
                                 if refresh:result['usage_refresh']=refresh.snapshot()
                             except Exception:pass
-                        if self.engine and 'recorder' not in result:result['recorder']=self.engine.recorder.snapshot()
+                        if self.engine and 'recorder' not in result and 'sd' not in result:result['recorder']=self.engine.recorder.snapshot()
                         reply=self.response(req,'memory',result=result)
                         cache[identity]=(signature,reply)
                         if len(cache)>128:cache.popitem(last=False)

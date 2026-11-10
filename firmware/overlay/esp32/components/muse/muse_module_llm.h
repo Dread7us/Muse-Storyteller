@@ -35,7 +35,7 @@ typedef struct {
     uint32_t issued_generations;
     int last_error;
     bool word_active;
-    bool paused,pause_requested;
+    bool paused,pause_requested,offline_line;
     unsigned word_start, word_end;
     uint32_t word_version;
 } muse_module_llm_status_t;
@@ -55,9 +55,9 @@ typedef enum {
  * No full model catalog is required: hello validates the configured tasks. */
 bool muse_module_llm_send_line(const char *json);
 /* Serial maintenance fixture: rejects recording, playback and native transfers. */
-bool muse_module_llm_test_framing_stall(void);
+bool muse_module_llm_test_framing_stall(bool active_playback);
 /* Bounded transfer owner recovery; refuses capture/playback/Recorder work. */
-bool muse_module_llm_recover_idle_link(void);
+bool muse_module_llm_recover_transfer_link(void);
 /* Vendor RAW header, exact binary body, then its framing newline. */
 bool muse_module_llm_send_binary(const char *json,const uint8_t *data,size_t length);
 void muse_module_llm_session(char out[9]);

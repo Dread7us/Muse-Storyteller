@@ -115,6 +115,12 @@ def scale_pcm(data, volume):
     return samples.tobytes()
 
 
+def match_offline_level(pcm):
+    # An 80% online level matched about 20–25% offline on the reference stack.
+    # Use the quieter end of that range before applying the live master volume.
+    return scale_pcm(pcm, 25)
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -546,8 +552,10 @@ class Backend:
                         time.sleep((0.15, 0.3, 0.6)[attempt])
         self.active_play = False
 
-    def play(self, pcm, volume, cancel):
+    def play(self, pcm, volume, cancel, *, offline=False):
         from muse_playback_control import play
+        if offline:
+            pcm = match_offline_level(pcm)
         return play(self,pcm,volume,cancel,check_cancel,scale_pcm,PCM_RATE,BridgeError)
 
     def record_synthesis(self, engine, pcm_bytes):
@@ -599,7 +607,7 @@ class Backend:
             first = False
             total_pcm += len(pcm)
             self.prepare_phrase_words(phrase, pcm)
-            self.play(pcm, volume, cancel)
+            self.play(pcm, volume, cancel, offline=True)
         return {"segments": len(phrases), "pcm_bytes": total_pcm, "joined": True}
 
     def listen(self, cancel, end, on_listening=None, on_level=None, max_seconds=90):

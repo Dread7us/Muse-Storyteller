@@ -16,6 +16,11 @@ int muse_native_voice_copy(uint32_t generation,char *text,size_t capacity,char k
 bool muse_native_voice_rebind(uint32_t previous,uint32_t current);
 void muse_native_voice_cancel(void);
 bool muse_native_voice_has_pending_sections(void);
+enum {
+    MUSE_NATIVE_SECTION_WAITING=1, MUSE_NATIVE_SECTION_DOWNLOADING,
+    MUSE_NATIVE_SECTION_CHECKING, MUSE_NATIVE_SECTION_RECHECKING,
+    MUSE_NATIVE_SECTION_PIPER,
+};
 typedef struct {
     unsigned phase,received,total,elapsed_ms,error,recoveries;
     unsigned source_ready_ms,opening_ready_ms,words_total,opening_words,words_ready;

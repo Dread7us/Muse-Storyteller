@@ -4,41 +4,72 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from muse_vm_tts_job import atomic_json,read_source,SPEEDS,MAX_AUDIO,terminate
 
-def plan_sections(spoken,target=190,maximum_words=36):
-    """Keep sentence boundaries; mark pieces of unusually long sentences."""
+FINAL_RETRY_SECONDS = 10
+
+
+def _time_left(deadline, maximum):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('Narration section timed out')
+    return min(maximum, remaining)
+
+
+def plan_sections(spoken,target=190,maximum_words=36,minimum_words=7):
+    """Keep complete sentences together and avoid synthesizing tiny fragments."""
     words=spoken.words
     if not words:raise ValueError('Narration needs spoken words')
-    result=[];start=0;sentence=0
+    groups=[];start=0
     while start<len(words):
         stop=start+1
         while stop<len(words) and not re.search(r'[.!?]["”’\']?$',words[stop-1][4]):
             stop+=1
-        # A sentence is prepared completely before any of its pieces play.
+        if groups:
+            previous,end=groups[-1]
+            fits=stop-previous<=maximum_words and words[stop-1][1]-words[previous][0]<=target
+            if end-previous<minimum_words or (stop-start<minimum_words and (fits or stop==len(words))):
+                groups[-1]=(previous,stop)
+            else:
+                groups.append((start,stop))
+        else:
+            groups.append((start,stop))
+        start=stop
+    result=[]
+    for sentence,(start,stop) in enumerate(groups):
+        # Do not begin playing this group until all its pieces are ready.
         at=start
         while at<stop:
             end=min(stop,at+maximum_words)
             while end>at+1 and words[end-1][1]-words[at][0]>target:end-=1
+            if 0<stop-end<minimum_words and end-at>minimum_words:
+                end=max(at+minimum_words,stop-minimum_words)
             result.append(dict(index=len(result),word_start=at,word_count=end-at,
                                sentence=sentence,sentence_end=end==stop,
                                spoken_sha256=hashlib.sha256(spoken.text[words[at][0]:words[end-1][1]].encode()).hexdigest()))
             at=end
-        start=stop;sentence+=1
     if len(result)>128:raise ValueError('Narration needs too many sections')
     return result
 
-def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
+def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker,*,retry_check=None):
     i=part['index'];words=spoken.words;at=part['word_start'];end=at+part['word_count']
     text=spoken.text[words[at][0]:words[end-1][1]]
     original=folder/('part-%03d-original.mp3'%i)
     delivery=folder/('part-%03d.mp3'%i)
     temporary=delivery.with_suffix('.pending')
     last=None
-    for attempt in range(2):
+    attempts = [text, text.strip('"“”')]
+    if retry_check is not None:
+        # Simplify the delivery of short dialogue. Keep the original text and
+        # word positions for verification, and keep the same voice and speed.
+        plain = ' '.join(text.translate(str.maketrans('"“”', '   ')).split())
+        attempts.append(re.sub(r'…|\.{2,}', '.', plain))
+    for attempt, spoken_text in enumerate(attempts):
         process=None
+        final_retry = attempt == 2
+        attempt_deadline = min(deadline, time.monotonic() + FINAL_RETRY_SECONDS) if final_retry else deadline
         try:
-            remaining=min(45,max(.1,deadline-time.monotonic()))
+            remaining=_time_left(attempt_deadline,45)
             with original.open('wb') as output:
-                process=subprocess.Popen([str(executable),'speak','--text',text,'--voice',voice,
+                process=subprocess.Popen([str(executable),'speak','--text',spoken_text,'--voice',voice,
                     '--language','en','--speed',str(SPEEDS[speed]),'--stream'],
                     stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.DEVNULL,start_new_session=True)
                 if process.wait(timeout=remaining)!=0:raise RuntimeError('Section synthesis failed')
@@ -47,7 +78,7 @@ def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
                 '-map','0:a:0','-vn','-ac','1','-ar','16000','-c:a','libmp3lame','-b:a','32k',
                 '-write_xing','0','-id3v2_version','0','-f','mp3','-y',str(temporary)],
                 stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-                check=True,timeout=min(20,max(.1,deadline-time.monotonic())))
+                check=True,timeout=_time_left(attempt_deadline,20))
             data=temporary.read_bytes()
             # MPEG-2 Layer III, 32 kbps/16 kHz: 144 bytes / 576 samples.
             # A bounds check is not a substitute for the Module's text alignment.
@@ -57,9 +88,14 @@ def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
                 raise RuntimeError('Section duration is inconsistent with its text')
             decoded=subprocess.run([str(ffmpeg),'-nostdin','-v','error','-i',str(temporary),
                 '-f','s16le','-ac','1','-ar','16000','pipe:1'],stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=True,timeout=15).stdout
+                stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=True,
+                timeout=_time_left(attempt_deadline,15)).stdout
             if len(decoded)!=len(data)//144*1152:raise RuntimeError('Unexpected section decoder padding')
-            checked=checker.check(decoded,text,part['word_start'])
+            if final_retry:
+                checked=retry_check(decoded,text,part['word_start'],attempt_deadline)
+            else:
+                checked=checker.check(decoded,text,part['word_start'])
+            _time_left(attempt_deadline,1)
             temporary.replace(delivery)
             meta=dict(part,version=2,state='complete',audio_bytes=len(data),
                       audio_sha256=hashlib.sha256(data).hexdigest(),duration_seconds=duration,
@@ -68,9 +104,18 @@ def _render(folder,part,spoken,voice,speed,executable,ffmpeg,deadline,checker):
             return meta
         except Exception as exc:
             last=exc
+            if final_retry:
+                break
             if process is not None:terminate(process)
             if time.monotonic()>=deadline:break
-    atomic_json(folder/('part-%03d.json'%i),dict(part,version=2,state='error',error='section_synthesis_failed'))
+    try:
+        atomic_json(folder/('part-%03d.json'%i),dict(part,version=2,state='error',error='section_synthesis_failed'))
+    finally:
+        # The player can fall back immediately, even if stopping the last
+        # timed-out provider process takes a little longer.
+        if final_retry and process is not None:
+            terminate(process)
+        temporary.unlink(missing_ok=True)
     raise RuntimeError('Narration section could not be generated') from last
 
 def synthesize_sections(folder,voice,speed='normal',executable='/opt/hatch/bin/tts',
@@ -101,7 +146,17 @@ def synthesize_sections(folder,voice,speed='normal',executable='/opt/hatch/bin/t
                 class DeferredCheck:
                     def check(self,*args):return loaded.result(timeout=max(.1,deadline-time.monotonic())).check(*args)
                 checker=DeferredCheck()
-            pending=[pool.submit(_render,folder,p,spoken,voice,speed,executable,ffmpeg,deadline,checker) for p in parts]
+
+            def retry_check(pcm, text, first_word, retry_deadline):
+                _time_left(retry_deadline, FINAL_RETRY_SECONDS)
+                future = loader.submit(checker.check, pcm, text, first_word)
+                try:
+                    return future.result(timeout=_time_left(retry_deadline, FINAL_RETRY_SECONDS))
+                finally:
+                    future.cancel()
+
+            pending=[pool.submit(_render,folder,p,spoken,voice,speed,executable,ffmpeg,deadline,checker,
+                                 retry_check=retry_check) for p in parts]
             digest=hashlib.sha256();total=0
             with (folder/'audio.mp3').open('xb') as joined:
                 for i,future in enumerate(pending):

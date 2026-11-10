@@ -83,8 +83,13 @@ in the same Muse VM verifies script agreement and unexpected repetition. A dedic
 English Wav2Vec2 acoustic model then aligns every spoken word to the decoded audio.
 Its bounded CTC path assigns each character a real acoustic frame span and derives
 word boundaries from those spans. Low-confidence alignment remains an explicit failure.
-A rejected section is synthesized
-once more; a second failure becomes an explicit error rather than unchecked speech.
+A rejected section is synthesized again. The updated VM helper allows a third
+attempt for that section with the same voice and pace. It simplifies dialogue
+punctuation for synthesis and checks the result against the original words. This
+attempt gets up to ten additional seconds within the existing job deadline.
+Verified sections are kept. If the attempt expires or fails validation, the
+device's section-level recovery can use Piper for that part and return to the
+selected online voice for the next verified section.
 The voice audio is unchanged by alignment. This replaces the former attention-based
 timing analyzer, which could squeeze correctly spoken words into zero-length anchors
 even after padding/filter retries. No whole-clip proportional estimates are used here.
@@ -98,7 +103,14 @@ arrive in the background. Long sentences are buffered fully before any piece pla
 the player joins adjacent ready sentences into bounded native audio calls.
 If data falls behind, waiting occurs at a sentence boundary with explicit buffering
 feedback and working controls. Timings on this path are measured anchors, without
-proportional fallback. Word offsets refer to the original UTF-8 text.
+proportional fallback for verified online audio. Word offsets refer to the original UTF-8 text.
+
+From edition 0.5.11, the reader shows the verified section count once it has
+the plan. A section that stays unpublished for 18 seconds can fall back to
+Piper even if the Muse job never reports an error. The device still checks
+each later section for online audio. Consecutive unavailable sections get a
+shorter check until verified online audio arrives again. Piper uses the
+matched local level and local word-timing estimates for just those sections.
 
 Pause and live volume resume from the audio clock position, independent of highlight
 delivery. Cached Restart preserves the checked audio; an incomplete Restart reuses

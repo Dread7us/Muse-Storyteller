@@ -7,7 +7,7 @@ extern "C" {
 #endif
 typedef struct {uint32_t version,samples;float response_s,seconds_per_word,boot_s;} muse_wait_model_t;
 typedef struct {float remaining_percent;bool started,late;} muse_wait_countdown_t;
-typedef struct {unsigned percent,seconds;bool late;} muse_wait_view_t;
+typedef struct {unsigned progress_percent,seconds;bool late;} muse_wait_view_t;
 void muse_wait_defaults(muse_wait_model_t *model);
 bool muse_wait_model_valid(const muse_wait_model_t *model);
 /* Estimate only the opening buffer, never the duration of the entire story. */

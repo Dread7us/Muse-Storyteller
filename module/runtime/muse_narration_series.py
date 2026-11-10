@@ -59,33 +59,84 @@ class Series:
         p=self.parts[index];words=self.spoken.words;a=p['word_start'];b=a+p['word_count']
         return self.spoken.text[words[a][0]:words[b-1][1]]
 
+    def _offline_schedule(self,index,pcm):
+        from muse_word_timing import WordTiming
+        timing=WordTiming(self.text)
+        timing.cursor=self.spoken.words[self.parts[index]['word_start']][0]
+        return timing.phrase(self._part_text(index),pcm)
+
     def _load_part(self,index):
         from muse_native_audio import Item
         folder=self.folder/('part-%03d'%index)
         try:
-            meta=json.loads((folder/'complete.json').read_text());timing=json.loads((folder/'aligned.json').read_text())
+            meta=json.loads((folder/'complete.json').read_text())
             pcm=folder/'voice.pcm';mp3=folder/'voice.mp3'
             if folder.is_symlink() or mp3.is_symlink() or pcm.is_symlink():return None
-            if meta.get('spoken_sha256')!=self.parts[index]['spoken_sha256'] or mp3.stat().st_size!=meta['audio_bytes'] or digest(mp3.read_bytes())!=meta['audio_sha256'] or pcm.stat().st_size!=meta['pcm_bytes'] or not 320<=meta['pcm_bytes']<=960000 or digest(pcm.read_bytes())!=meta.get('pcm_sha256'):
-                return None
-            if timing.get('version')!=1 or timing.get('audio_sha256')!=meta['audio_sha256'] or not timing.get('checked'):return None
-            schedule=aligned_schedule(self.spoken,self.parts[index],dict(aligned=True,words=timing['anchors']),meta['pcm_bytes']/32000.)
+            if not 320<=pcm.stat().st_size==meta['pcm_bytes']<=960000:return None
+            decoded=pcm.read_bytes()
+            if (meta.get('spoken_sha256')!=self.parts[index]['spoken_sha256'] or len(decoded)!=meta['pcm_bytes']
+                    or not 320<=len(decoded)<=960000 or len(decoded)%2 or digest(decoded)!=meta.get('pcm_sha256')):return None
+            offline=meta.get('offline') is True
+            if offline:
+                if meta['audio_bytes']!=0:return None
+                encoded=b''
+                schedule=self._offline_schedule(index,decoded)
+            else:
+                timing=json.loads((folder/'aligned.json').read_text())
+                if not 144<=mp3.stat().st_size==meta['audio_bytes']<=120000:return None
+                encoded=mp3.read_bytes()
+                if len(encoded)!=meta['audio_bytes'] or digest(encoded)!=meta['audio_sha256']:return None
+                if timing.get('version')!=1 or timing.get('audio_sha256')!=meta['audio_sha256'] or not timing.get('checked'):return None
+                schedule=aligned_schedule(self.spoken,self.parts[index],dict(aligned=True,words=timing['anchors']),len(decoded)/32000.)
+            if not schedule:return None
             item=object.__new__(Item);item.key=str(index);item.text=self._part_text(index);item.session=self.session;item.folder=folder;item.mp3=mp3;item.pcm=pcm
-            item.received=meta['audio_bytes'];item.done=True;item.error=None;item.digest=hashlib.sha256(mp3.read_bytes());item.file=None;item.decoder=None
+            item.received=len(encoded);item.done=True;item.error=None;item.digest=hashlib.sha256(encoded);item.file=None;item.decoder=None;item.offline=offline
             self.items[index]=item;self.timings[index]=schedule
             return item
         except (OSError,ValueError,TypeError,KeyError,SeriesError):return None
 
     def status(self):
         with self.lock:
-            count=0;seconds=0.;safe=0;safe_seconds=0.
+            count=0;prefix_bytes=0;offline=0;seconds=0.;safe=0;safe_seconds=0.
             for i in range(len(self.parts)):
                 if i not in self.timings:break
-                count+=1;seconds+=self.items[i].size()/32000.
+                item=self.items[i]
+                count+=1;prefix_bytes+=item.received;offline+=getattr(item,'offline',False);seconds+=item.size()/32000.
                 if self.parts[i]['sentence_end']:safe=count;safe_seconds=seconds
             ready=safe>0 and (safe==len(self.parts) or (safe>=2 and safe_seconds>=12))
             return dict(received=sum(x.received for x in self.items.values()),complete=self.sealed,
-                        ready=ready,ready_sections=count,error=bool(self.error))
+                        ready=ready,ready_sections=count,prefix_bytes=prefix_bytes,offline_sections=offline,error=bool(self.error))
+
+    def _offline_part(self,index,speed):
+        from muse_piper import synthesize
+        if type(index) is not int or not 0<=index<len(self.parts) or speed not in ('slow','normal','fast'):
+            raise SeriesError('Invalid offline narration section')
+        item=self.items.get(index) or self._load_part(index)
+        if item and item.done:return self.status()
+        if item:item.abort()
+        pcm=synthesize(self._part_text(index),None,lambda _:None,speed)
+        if not 320<=len(pcm)<=960000 or len(pcm)%2:raise SeriesError('Offline narration audio is incomplete')
+        folder=self.folder/('part-%03d'%index)
+        if folder.exists():folder.rename(folder.with_name(folder.name+'.interrupted-'+str(time.monotonic_ns())))
+        folder.mkdir(mode=0o700)
+        (folder/'voice.pcm').write_bytes(pcm)
+        (folder/'complete.json').write_text(json.dumps(dict(spoken_sha256=self.parts[index]['spoken_sha256'],
+            pcm_bytes=len(pcm),pcm_sha256=digest(pcm),audio_bytes=0,offline=True)))
+        if not self._load_part(index):raise SeriesError('Offline narration could not be verified')
+        return self.status()
+
+    def seal_value(self,mixed=False):
+        if len(self.timings)!=len(self.parts):raise SeriesError('Narration omitted a section')
+        combined=hashlib.sha256();size=0
+        for i in range(len(self.parts)):
+            item=self.items[i]
+            block=(item.pcm if mixed else item.mp3).read_bytes()
+            if mixed and digest(block)!=json.loads((item.folder/'complete.json').read_text())['pcm_sha256']:
+                raise SeriesError('Narration PCM changed')
+            combined.update(block);size+=len(block)
+        value=dict(bytes=size,sha256=combined.hexdigest())
+        if mixed:value['mode']='mixed-pcm'
+        return value
 
     def request(self,data,session):
         from muse_native_audio import Item
@@ -102,6 +153,8 @@ class Series:
                 return self.status()
             if op=='series_abort':
                 self.error='Narration transfer stopped';return self.status()
+            if op=='part_offline':
+                return self._offline_part(data.get('index'),data.get('speed'))
             if op=='part_begin':
                 index=data.get('index');size=data.get('bytes');sha=data.get('sha256')
                 if type(index) is not int or not 0<=index<len(self.parts) or type(size) is not int or not 144<=size<=120000 or not re.fullmatch('[0-9a-f]{64}',str(sha)):
@@ -109,7 +162,12 @@ class Series:
                 item=self.items.get(index) or self._load_part(index)
                 if item and item.done:
                     if item.received!=size or item.digest.hexdigest()!=sha:raise SeriesError('Narration audio changed')
-                    self.upload=index;return dict(received=size,complete=True,sha256=sha)
+                    self.upload=index;return dict(received=size,complete=True,sha256=sha,ready=self.status()['ready'])
+                if (data.get('resume') is True and item and item.expected_bytes==size and item.expected_hash==sha and not item.error
+                        and not item.file.closed and item.decoder.poll() is None
+                        and item.mp3.stat().st_size==item.received):
+                    self.upload=index
+                    return dict(received=item.received,complete=False)
                 if item:item.abort()
                 folder=self.folder/('part-%03d'%index)
                 if folder.exists():
@@ -134,7 +192,7 @@ class Series:
             if op=='part_end':
                 if self.upload is None:raise SeriesError('No narration upload is active')
                 index=self.upload;item=self.items[index]
-                if item.done:return dict(received=item.received)
+                if item.done:return dict(received=item.received,ready=self.status()['ready'])
                 if item.received!=item.expected_bytes or item.digest.hexdigest()!=item.expected_hash:raise SeriesError('Narration section failed its hash')
                 item.file.close();item.decoder.stdin.close();item.decoder.wait(timeout=8)
                 if item.decoder.returncode or item.size()<320 or item.size()>960000:raise SeriesError('Narration section did not decode completely')
@@ -145,14 +203,15 @@ class Series:
                 path=item.folder/'aligned.json';tmp=path.with_suffix('.pending');tmp.write_text(json.dumps(value));tmp.replace(path)
                 item.done=True
                 self.timings[index]=schedule
-                return dict(received=item.received)
-            if op=='series_end':
-                if len(self.items)!=len(self.parts) or any(not self.items[i].done for i in range(len(self.parts))):raise SeriesError('Narration omitted a section')
-                combined=hashlib.sha256();size=0
-                for i in range(len(self.parts)):
-                    block=self.items[i].mp3.read_bytes();combined.update(block);size+=len(block)
-                if data.get('bytes')!=size or data.get('sha256')!=combined.hexdigest():raise SeriesError('Complete narration failed its hash')
-                (self.folder/'sealed.json').write_text(json.dumps(dict(bytes=size,sha256=combined.hexdigest())))
+                return dict(received=item.received,ready=self.status()['ready'])
+            if op in ('series_end','series_end_mixed'):
+                mixed=op=='series_end_mixed'
+                if mixed!=any(getattr(item,'offline',False) for item in self.items.values()):
+                    raise SeriesError('Narration voice sources changed')
+                value=self.seal_value(mixed)
+                if not mixed and (data.get('bytes')!=value['bytes'] or data.get('sha256')!=value['sha256']):
+                    raise SeriesError('Complete narration failed its hash')
+                pending=self.folder/'sealed.pending';pending.write_text(json.dumps(value));pending.replace(self.folder/'sealed.json')
                 self.sealed=True;return self.status()
         raise SeriesError('Unknown narration operation')
 
@@ -163,7 +222,7 @@ class Series:
             self.error='Narration service stopped'
 
     def play(self,backend,volume,cancel,on_play,on_buffering=None):
-        from muse_voice_backend import check_cancel
+        from muse_voice_backend import check_cancel, match_offline_level
         position=0;total=0;blocks=0;words=0;paused=False;buffering=False
         try:
             while position<len(self.parts):
@@ -177,14 +236,14 @@ class Series:
                         callback=getattr(backend,'playback_state_callback',None)
                         if callback:callback(paused)
                     with self.lock:
-                        if self.error:raise SeriesError(self.error)
                         end=position
                         # Never wait for data in the middle of one sentence.
                         while end<len(self.parts) and end in self.timings:
                             end+=1
                             if self.parts[end-1]['sentence_end']:break
                         ready=end>position and self.parts[end-1]['sentence_end']
-                    if position==0:ready=ready and self.status()['ready']
+                        if position==0:ready=ready and self.status()['ready']
+                        if self.error and not ready:raise SeriesError(self.error)
                     if ready and not paused:break
                     if not buffering and on_buffering:on_buffering();buffering=True
                     if time.monotonic()>until and not paused:raise SeriesError('Next narration sentence timed out')
@@ -194,7 +253,9 @@ class Series:
                 # Join adjacent ready sentences, bounded below the native IPC limit.
                 with self.lock:
                     safe=end;size=sum(self.items[i].size() for i in range(position,end))
+                    offline=any(getattr(self.items[i],'offline',False) for i in range(position,end))
                     while end<len(self.parts) and end in self.timings and size+self.items[end].size()<=1536000:
+                        if getattr(self.items[end],'offline',False)!=offline:break
                         size+=self.items[end].size();end+=1
                         if self.parts[end-1]['sentence_end']:safe=end
                     end=safe
@@ -207,11 +268,16 @@ class Series:
                             size+=self.items[end].size();end+=1
                     pcm=[];schedule=[];seconds=0.
                     for i in range(position,end):
-                        data=self.items[i].pcm.read_bytes()
-                        if len(data)!=self.items[i].size():raise SeriesError('Narration cache was shortened')
+                        item=self.items[i]
+                        data=item.pcm.read_bytes()
+                        if len(data)!=item.size():raise SeriesError('Narration cache was shortened')
+                        # A long sentence can have both sources in one playback block.
+                        if getattr(item,'offline',False):data=match_offline_level(data)
                         pcm.append(data);schedule.extend((t+seconds,a,b) for t,a,b in self.timings[i]);seconds+=len(data)/32000.
                 backend.word_schedule=schedule
-                if on_play:on_play()
+                source_callback=getattr(backend,'narration_source_callback',None)
+                if source_callback:source_callback(offline)
+                elif on_play:on_play()
                 buffering=False
                 backend.play(b''.join(pcm),volume,cancel)
                 total+=sum(map(len,pcm));blocks+=1;words+=len(schedule);position=end
@@ -221,7 +287,9 @@ class Series:
                 if self.error:raise SeriesError(self.error)
                 if time.monotonic()>until:raise SeriesError('Final narration check timed out')
                 time.sleep(.02)
-            result=dict(complete=True,pcm_bytes=total,played_pcm_bytes=total,blocks=blocks,words=words,sections=position,aligned=True)
+            offline_sections=sum(getattr(item,'offline',False) for item in self.items.values())
+            result=dict(complete=True,pcm_bytes=total,played_pcm_bytes=total,blocks=blocks,words=words,
+                        sections=position,aligned=not offline_sections,offline_sections=offline_sections)
             (self.folder/'last-playback.json').write_text(json.dumps(result));return result
         finally:
             callback=getattr(backend,'playback_state_callback',None)
