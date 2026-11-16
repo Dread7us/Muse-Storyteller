@@ -8,7 +8,9 @@ def harness():
     final=source[source.index('static const char *reply_final_text('):source.index('EXT_RAM_BSS_ATTR static char s_final_reply')]
     done=source[source.index('static void message_done('):source.index('static const char *msg_id(')]
     binding=source[source.index('static int find_msg('):source.index('static void append_text(')]
-    events=source[source.index('static const char *msg_id('):source.index('static void on_chat_ack(')]
+    events=source[source.index('static const char *msg_id('):source.index('static bool on_chat_ack(')]
+    history=source[source.index('static bool recover_saved_reply('):source.index('/* End saved reply recovery. */')]
+    reconnect=source[source.index('static void drop_connection('):source.index('static void drain_out(void);',source.index('static void drop_connection('))]
     voice_selection=source[source.index('static void honor_offline_voice_selection('):source.index('#endif\n\nstatic void start_tts(')]
     restart=source[source.index('static void restart_reply('):source.index('static void handle(')]
     check=source[source.index('static void check_turn(void)'):source.index('/* ---- Inbound dispatch ---- */')]
@@ -29,6 +31,7 @@ def harness():
 #define ESP_LOGW(...) ((void)0)
 enum {P_IDLE,P_WAIT_REPLY,P_WAIT_FINAL,TTS_NONE,TTS_QUEUED,TTS_ACTIVE,TTS_FINISHED,M_DONE,M_TEXT,MUSE_HATCH_EV_SENT,MUSE_HATCH_EV_HEARD,MUSE_MODULE_LLM_PLAYBACK_DONE};
 static const int64_t FINAL_TIMEOUT_US=15000000,REPLY_TIMEOUT_US=60000000,TEXT_REPLY_TIMEOUT_US=300000000,TEXT_TURN_CAP_US=900000000,SETTLE_US=3000000;
+static const int64_t CHAT_ACK_TIMEOUT_US=25000000,CHAT_REPLY_IDLE_US=150000000,CHAT_HISTORY_INTERVAL_US=15000000,CHAT_HISTORY_TIMEOUT_US=6000000;
 struct cJSON {int type=0;double valuedouble=0;std::string value;std::map<std::string,cJSON*> fields;std::vector<cJSON*> items;};
 static cJSON *object(){return new cJSON;}
 static cJSON *str(const char *s){auto *p=new cJSON;p->type=1;p->value=s;return p;}
@@ -50,7 +53,7 @@ struct rejected_t {bool overflow=false;};
 static bool muse_chat_is_rejected(rejected_t*,const char*){return false;}
 static void muse_chat_reject(rejected_t*,const char*){}
 #define MAX_MSGS 8
-struct turn_t {int phase=P_WAIT_REPLY,tts_msg=-1,nmsgs=1;unsigned gen=1,pcm_out=0;size_t mp3_len=0;bool text=false,native_started=false,native_direct=false,agent_busy=false,acked=false,silent=false,native_claimed=false;int64_t start_us=0,end_sent_us=0,chat_us=0,last_event_us=0,last_content_us=0,playback_paused_us=0,playback_pause_check=0;char *texts=nullptr,native_job[25]{},user_ids[2][80]{};msg_t msgs[8];task_progress_t task_progress{};rejected_t rejected;};
+struct turn_t {int phase=P_WAIT_REPLY,tts_msg=-1,nmsgs=1;unsigned gen=1,pcm_out=0;size_t mp3_len=0;bool text=false,native_started=false,native_direct=false,agent_busy=false,acked=false,silent=false,native_claimed=false,chat_posted=false,recovered_subscription=false;int64_t start_us=0,end_sent_us=0,chat_us=0,last_event_us=0,last_content_us=0,playback_paused_us=0,playback_pause_check=0,history_id=0,history_started_us=0,history_next_us=0,reconnect_since_us=0,chat_id=0;char *texts=nullptr,native_job[25]{},user_ids[2][80]{};msg_t msgs[8];task_progress_t task_progress{};rejected_t rejected;};
 static turn_t s_turn;
 static char text_storage[8*TEXT_MAX],s_pending_reply[TEXT_MAX];
 static char s_final_reply[TEXT_MAX];
@@ -60,6 +63,18 @@ static bool s_bench_reply=false,s_can_restart=false,s_playback_active=false;
 static int voice_source=1;
 static int muse_settings_voice_source(){return voice_source;}
 static bool s_restart_wait=false,s_transport_pending=false,s_replaying=false,native_rebind_ok=false,sections_pending=false;
+static bool s_local_only=false,s_connected=true;
+enum {MUSE_CHAT_WAIT_NONE,MUSE_CHAT_WAIT_ACCEPTED,MUSE_CHAT_WAIT_WORKING,MUSE_CHAT_WAIT_CHECKING,MUSE_CHAT_WAIT_RECONNECTING,K_CHAT_HISTORY,MUSE_HATCH_UNTESTED};
+static int s_chat_wait=MUSE_CHAT_WAIT_NONE;
+static int64_t s_auto_backoff_us=5000000,s_auto_next_us=0;
+static unsigned history_reads=0,history_resets=0;
+static int64_t open_stream(int kind,const char *verb,const char *path,const char *,const char *,const char *body,bool end){
+ assert(kind==K_CHAT_HISTORY&&!strcmp(verb,"GET")&&!strcmp(path,"/chat/history?limit=1")&&!body&&end);
+ return ++history_reads;
+}
+static void send_reset(int64_t id){assert(id>0);++history_resets;}
+static void disconnect(const char*){s_connected=false;}
+static void muse_hatch_report(int,const char*){}
 static unsigned s_gen=1,rebound_previous=0,rebound_current=0;
 static char s_reply_shown[128];
 static int64_t clock_us=0;
@@ -85,11 +100,22 @@ static void muse_module_llm_cancel(unsigned){}
 static void drain_out(){}
 static void append_text(msg_t &m,const char *text){m.len+=strlen(text);strlcat(s_turn.texts+(&m-s_turn.msgs)*TEXT_MAX,text,TEXT_MAX);strlcat(m.tail,text,sizeof(m.tail));}
 static void show_reply_start(const msg_t&){}
-''' + binding + final + done + events + voice_selection + restart + check + '\nstatic void drain(int playback){\n'+drain+'\n}\n'+r'''
+''' + binding + final + done + events + history + reconnect + voice_selection + restart + check + '\nstatic void drain(int playback){\n'+drain+'\n}\n'+r'''
 static void reset(){s_turn=turn_t{};memset(text_storage,0,sizeof(text_storage));s_turn.texts=text_storage;clock_us=0;failure.clear();completed=false;conversations=cancels=0;s_pending_reply_msg=-1;s_last_seq=0;s_gen=1;native_rebind_ok=false;sections_pending=false;s_can_restart=false;s_restart_wait=false;s_transport_pending=false;s_replaying=false;rebound_previous=rebound_current=0;}
 static void incoming(const char *kind,int seq,const char *id,const char *text){auto *line=object(),*p=object(),*n=object();n->type=3;n->valuedouble=seq;line->fields["seq"]=n;line->fields["type"]=str("event");line->fields["event"]=str(kind);line->fields["payload"]=p;p->fields["message_id"]=str(id);p->fields["display_text"]=str(text);p->fields["text"]=str(text);on_event(line);}
 static void ack(){strcpy(text_storage,"I am working.");s_turn.msgs[0].done=true;s_turn.msgs[0].len=strlen(text_storage);s_turn.msgs[0].tts=TTS_FINISHED;}
 static void work(bool task,const char *id,const char *status,const char *activity=nullptr,bool linked=false){task_progress_update(s_turn.task_progress,task,id,status,activity,linked);s_turn.agent_busy=task_progress_busy(s_turn.task_progress);}
+static void accepted_turn(){
+ s_turn.nmsgs=0;s_turn.acked=s_turn.chat_posted=true;
+ strcpy(s_turn.user_ids[0],"our-request");
+}
+static cJSON *saved_reply(const char *parent,const char *id="result"){
+ auto *root=object(),*reply=object();
+ root->fields["messages"]=arr({reply});
+ reply->fields["role"]=str("assistant");reply->fields["id"]=str(id);
+ reply->fields["reply_to_message_id"]=str(parent);reply->fields["content"]=str("Finished.");
+ return root;
+}
 int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];reset();
  if(c=="busy_gap"){ack();work(true,"root","running");clock_us=61000000;check_turn();assert(!completed&&failure.empty()&&s_turn.phase==P_WAIT_REPLY);}
  else if(c=="idle_activity"){work(true,"root","running");work(false,nullptr,nullptr,"idle");assert(s_turn.agent_busy);work(false,nullptr,"idle");assert(s_turn.agent_busy);}
@@ -113,6 +139,40 @@ int main(int argc,char **argv){assert(argc==2);std::string c=argv[1];reset();
  else if(c=="section_restart"){ack();s_can_restart=true;sections_pending=true;s_turn.native_claimed=true;strcpy(s_turn.native_job,"section-job");strcpy(s_turn.msgs[0].external_key,"partial-cache");restart_reply();assert(s_turn.gen==2&&!s_turn.native_claimed&&!s_turn.native_started&&!s_replaying&&!s_turn.msgs[0].external_key[0]&&s_restart_wait&&cancels==1);}
  else if(c=="offline_switch"){ack();s_turn.msgs[0].tts=TTS_QUEUED;voice_source=0;s_turn.native_started=true;strcpy(s_turn.native_job,"stalled-job");honor_offline_voice_selection();assert(!s_turn.native_job[0]&&!s_turn.native_started&&cancels==1&&s_turn.msgs[0].tts==TTS_QUEUED&&std::string(text_storage)=="I am working.");honor_offline_voice_selection();assert(cancels==1);}
  else if(c=="offline_restart"){ack();voice_source=0;s_can_restart=true;s_turn.native_direct=true;s_turn.native_started=true;strcpy(s_turn.msgs[0].external_key,"verified-cache");restart_reply();assert(!s_turn.native_direct&&!s_turn.native_started&&!s_turn.msgs[0].external_key[0]&&s_turn.msgs[0].tts==TTS_QUEUED&&!rebound_previous&&cancels==1&&s_restart_wait);}
+ else if(c=="slow_accepted"){
+   accepted_turn();clock_us=67000000;check_turn();
+   assert(s_turn.phase==P_WAIT_REPLY&&failure.empty());
+   clock_us=CHAT_REPLY_IDLE_US;check_turn();
+   assert(failure=="REPLY NOT RECEIVED - CHECK MUSE APP");
+ }
+ else if(c=="unconfirmed"){
+   s_turn.nmsgs=0;s_turn.chat_posted=true;clock_us=CHAT_ACK_TIMEOUT_US;check_turn();
+   assert(failure=="SEND UNCONFIRMED - CHECK MUSE APP");
+ }
+ else if(c=="saved_reply"){
+   accepted_turn();assert(!recover_saved_reply(saved_reply("another-request")));
+   assert(!s_turn.nmsgs&&!conversations);
+   auto *result=saved_reply("our-request");
+   assert(recover_saved_reply(result));
+   assert(s_turn.nmsgs==1&&conversations==1&&s_turn.msgs[0].tts==TTS_QUEUED);
+   assert(!recover_saved_reply(result)&&conversations==1);
+ }
+ else if(c=="reconnect"){
+   accepted_turn();clock_us=40000000;s_turn.chat_id=12;s_turn.history_id=13;
+   drop_connection("test");
+   assert(!s_connected&&s_turn.phase==P_WAIT_REPLY&&s_turn.acked&&s_turn.recovered_subscription);
+   assert(s_turn.reconnect_since_us==clock_us&&!s_turn.chat_id&&!s_turn.history_id);
+   assert(s_chat_wait==MUSE_CHAT_WAIT_RECONNECTING&&!history_reads);
+   s_connected=true;check_saved_reply(clock_us);
+   assert(history_reads==1&&s_chat_wait==MUSE_CHAT_WAIT_CHECKING);
+   check_saved_reply(clock_us+CHAT_HISTORY_TIMEOUT_US);
+   assert(history_resets==1&&history_reads==1&&s_chat_wait==MUSE_CHAT_WAIT_ACCEPTED);
+   check_saved_reply(clock_us+CHAT_HISTORY_INTERVAL_US);
+   assert(history_reads==2);
+   incoming("delta.text_append",100,"stale","Duplicate delta.");
+   assert(!s_turn.nmsgs);
+   assert(recover_saved_reply(saved_reply("our-request")));
+ }
  else assert(false);
 }
 '''
@@ -120,11 +180,16 @@ class TaskLifecycle(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.compiler=shutil.which('c++') or shutil.which('g++') or shutil.which('clang++')
+        msvc=shutil.which('cl') if not cls.compiler else None
+        cls.compiler=cls.compiler or msvc
         if not cls.compiler:raise unittest.SkipTest('Native C++ compiler unavailable; Linux CI exercises production lifecycle.')
         cls.tmp=tempfile.TemporaryDirectory();cls.addClassCleanup(cls.tmp.cleanup)
-        source=Path(cls.tmp.name)/'lifecycle.cpp';source.write_text(harness(),encoding='utf8');cls.exe=Path(cls.tmp.name)/'lifecycle'
-        result=subprocess.run([cls.compiler,'-std=c++17','-O0',str(source),'-o',str(cls.exe)],capture_output=True,text=True)
-        if result.returncode:raise RuntimeError(result.stderr)
+        source=Path(cls.tmp.name)/'lifecycle.cpp';source.write_text(harness(),encoding='utf8')
+        cls.exe=Path(cls.tmp.name)/('lifecycle.exe' if msvc else 'lifecycle')
+        command=([cls.compiler,'/nologo','/std:c++17','/EHsc',f'/Fe:{cls.exe}',str(source)] if msvc else
+                 [cls.compiler,'-std=c++17','-O0',str(source),'-o',str(cls.exe)])
+        result=subprocess.run(command,cwd=cls.tmp.name,capture_output=True,text=True)
+        if result.returncode:raise RuntimeError(result.stdout+result.stderr)
     def run_case(self,name):subprocess.run([str(self.exe),name],check=True,capture_output=True,text=True)
     def test_restart_resumes_the_section_producer_as_well_as_audio(self):self.run_case('section_restart')
     def test_work_survives_more_than_twenty_seconds_after_ack(self):self.run_case('busy_gap')
@@ -148,3 +213,7 @@ class TaskLifecycle(unittest.TestCase):
     def test_legacy_restart_keeps_retry_behavior(self):self.run_case('legacy_restart')
     def test_offline_switch_releases_a_stalled_online_job_without_losing_text(self):self.run_case('offline_switch')
     def test_offline_restart_does_not_rebind_or_play_cached_online_audio(self):self.run_case('offline_restart')
+    def test_accepted_slow_reply_has_a_bounded_deadline(self):self.run_case('slow_accepted')
+    def test_unconfirmed_send_has_a_distinct_deadline(self):self.run_case('unconfirmed')
+    def test_saved_reply_requires_correlation_and_is_deduplicated(self):self.run_case('saved_reply')
+    def test_reconnection_only_reads_the_saved_result(self):self.run_case('reconnect')

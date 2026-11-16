@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.6.1**
+**Edition v0.7.3**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -93,7 +93,7 @@ Unavailable actions dim automatically; Pause changes to Resume during paused pla
 | 🔊 | **Piper narration** | The tested U.S. English Lessac-low voice, with Slow / Normal / Fast pacing and sentence-aware buffering. |
 | 📖 | **A reader that follows** | Word highlighting and automatic scrolling follow playback. Switch between Card, Max, and two-line views; turn Follow off to read freely. |
 | ⏯️ | **Centered playback controls** | Stop, Pause/Resume, and Restart remain available in the conversation and Settings. Restart reuses received text rather than requesting a new answer. |
-| ✨ | **Readable formatting** | Emphasis, lists, quotes, code, and links render in the conversation card. Speech skips formatting marks and applies context-sensitive pronunciation. |
+| ✨ | **Readable formatting** | Prose wraps to the card width, with clean paragraph spacing and bold speaker labels and headings. Emphasis, lists, quotes, code, and links stay readable while word highlighting follows playback. |
 | 🎚️ | **Settings that actually change** | Explicit spoken commands apply volume, mute, brightness, and speech speed, then confirm the stored value. Muting is visible in the header. |
 | 🗂️ | **Local conversation library** | Automatic drafts, bookmarks, paging, resume, deletion, and regenerated titles. Bounded recent context and local recall support longer conversations. |
 | 📝 | **Local Recorder** | Screen-off recording, text transcripts, optional compressed WAV chunks, and a separate conservative AI-reviewed copy. Original text is retained. |
@@ -138,9 +138,15 @@ also uses the Module’s local model when available.
 allowance and service terms still apply. This project does not make Muse itself offline,
 increase its allowance, or add a paid speech API.
 
+With the Module powered and the Core2 on Wi-Fi, ordinary Muse replies work away from
+the PC. The device distinguishes a request Muse accepted from a lost connection and
+checks for the same reply after reconnecting. If delivery is uncertain, check the Muse
+app before repeating a request that can act on your behalf.
+
 **Usage is an estimate between checks.** Tap **Check now** to ask the paired Muse for
 its latest allowance over Wi-Fi. The device keeps the last confirmed reading if a check
-fails. The usage popup compares the estimate shown before a successful check with Muse’s
+fails. The popup shows a live countdown when Muse supplies the exact reset time.
+It compares the estimate shown before a successful check with Muse’s
 verified reading and shows the latest miss and recent average. The local accuracy report
 compares consecutive groups of five checks as evidence builds. [Usage and accuracy guide →](docs/USAGE.md)
 

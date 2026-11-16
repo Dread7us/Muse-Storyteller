@@ -1394,7 +1394,7 @@ void muse_ui_usage_update(int remaining_pct,int reset_after_s,unsigned valid_for
     portEXIT_CRITICAL(&s_usage_lock);
 }
 static lv_obj_t *s_usage_popup_body,*s_usage_check_button,*s_usage_check_label;
-static lv_obj_t *s_usage_value,*s_usage_meter,*s_usage_reading,*s_usage_synced,*s_usage_result;
+static lv_obj_t *s_usage_value,*s_usage_meter,*s_usage_reading,*s_usage_countdown,*s_usage_synced,*s_usage_result;
 static bool s_usage_popup_open;
 static uint32_t s_usage_popup_at,s_usage_popup_query;
 static void usage_popup_tick(void)
@@ -1411,8 +1411,15 @@ static void usage_popup_tick(void)
     if(valid)snprintf(text,sizeof(text),"%u%% left*",100-account.used);else strlcpy(text,"No reading yet",sizeof(text));
     if(strcmp(text,lv_label_get_text(s_usage_value)))lv_label_set_text(s_usage_value,text);
     lv_bar_set_value(s_usage_meter,valid?100-account.used:0,LV_ANIM_OFF);
-    if(valid)snprintf(text,sizeof(text),"Muse: %u%% used  /  Resets %s",account.observed,account.reset);else strlcpy(text,"Check Muse to get your first reading",sizeof(text));
+    if(valid)snprintf(text,sizeof(text),"Muse: %u%% used / Reset %s UTC",account.observed,account.reset);else strlcpy(text,"Check Muse to get your first reading",sizeof(text));
     if(strcmp(text,lv_label_get_text(s_usage_reading)))lv_label_set_text(s_usage_reading,text);
+    int seconds=valid?muse_status_reset_seconds(account.reset_after_s,account.received_ms,now):-1;
+    if(seconds>0){
+        unsigned days=(unsigned)seconds/86400,hours=(unsigned)seconds/3600%24,minutes=(unsigned)seconds/60%60;
+        if(days)snprintf(text,sizeof(text),"Resets in %ud %02uh %02um %02us",days,hours,minutes,(unsigned)seconds%60);
+        else snprintf(text,sizeof(text),"Resets in %02uh %02um %02us",hours,minutes,(unsigned)seconds%60);
+    }else strlcpy(text,seconds==0?"Reset due - check now":"Check now to sync reset time",sizeof(text));
+    if(strcmp(text,lv_label_get_text(s_usage_countdown)))lv_label_set_text(s_usage_countdown,text);
     snprintf(text,sizeof(text),"Last sync: %s",account.last_sync[0]?account.last_sync:valid?account.checked:"Never");
     if(strcmp(text,lv_label_get_text(s_usage_synced)))lv_label_set_text(s_usage_synced,text);
     const char *result="Ready to check over Wi-Fi";unsigned color=0xc1ade3;
@@ -1447,13 +1454,13 @@ static void usage_check_clicked(lv_event_t *e)
 }
 static void status_popup_close(lv_event_t *e)
 {
-    (void)e;s_usage_popup_open=false;s_usage_popup_body=NULL;s_usage_check_button=NULL;s_usage_check_label=NULL;s_usage_value=NULL;s_usage_meter=NULL;s_usage_result=NULL;if(s_status_dialog)lv_obj_delete(s_status_dialog);s_status_dialog=NULL;
+    (void)e;s_usage_popup_open=false;s_usage_popup_body=NULL;s_usage_check_button=NULL;s_usage_check_label=NULL;s_usage_value=NULL;s_usage_meter=NULL;s_usage_result=NULL;s_usage_countdown=NULL;if(s_status_dialog)lv_obj_delete(s_status_dialog);s_status_dialog=NULL;
 }
 static void status_popup(lv_event_t *e)
 {
     muse_state_poke();status_popup_close(NULL);
     bool quota=(intptr_t)lv_event_get_user_data(e)==1;
-    s_status_dialog=lv_obj_create(lv_layer_top());lv_obj_set_size(s_status_dialog,300,quota?226:198);lv_obj_center(s_status_dialog);lv_obj_remove_flag(s_status_dialog,LV_OBJ_FLAG_SCROLLABLE);
+    s_status_dialog=lv_obj_create(lv_layer_top());lv_obj_set_size(s_status_dialog,300,quota?236:198);lv_obj_center(s_status_dialog);lv_obj_remove_flag(s_status_dialog,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(s_status_dialog,lv_color_hex(0x191028),0);lv_obj_set_style_border_color(s_status_dialog,lv_color_hex(0x9c6aff),0);lv_obj_set_style_radius(s_status_dialog,14,0);
     if(quota){lv_obj_set_style_pad_all(s_status_dialog,10,0);lv_obj_set_style_border_width(s_status_dialog,1,0);}
     lv_obj_t *title=make_label(s_status_dialog,&lv_font_montserrat_16,0xd4bdff);lv_label_set_text(title,quota?"Muse account usage":"Live device status");lv_obj_align(title,LV_ALIGN_TOP_MID,0,0);
@@ -1463,9 +1470,10 @@ static void status_popup(lv_event_t *e)
         s_usage_value=make_label(s_status_dialog,&lv_font_montserrat_28,0xf3edff);lv_obj_set_pos(s_usage_value,0,23);lv_obj_set_width(s_usage_value,278);lv_obj_set_style_text_align(s_usage_value,LV_TEXT_ALIGN_CENTER,0);
         s_usage_meter=lv_bar_create(s_status_dialog);lv_obj_set_pos(s_usage_meter,0,57);lv_obj_set_size(s_usage_meter,278,7);lv_bar_set_range(s_usage_meter,0,100);lv_obj_set_style_bg_color(s_usage_meter,lv_color_hex(0x332445),0);lv_obj_set_style_bg_color(s_usage_meter,lv_color_hex(0x9c6aff),LV_PART_INDICATOR);
         s_usage_reading=make_label(s_status_dialog,&lv_font_montserrat_14,0xd4bdff);lv_obj_set_pos(s_usage_reading,0,72);lv_obj_set_width(s_usage_reading,278);lv_obj_set_style_text_align(s_usage_reading,LV_TEXT_ALIGN_CENTER,0);
-        s_usage_synced=make_label(s_status_dialog,&lv_font_montserrat_14,0xbcb0cf);lv_obj_set_pos(s_usage_synced,0,90);lv_obj_set_width(s_usage_synced,278);lv_obj_set_style_text_align(s_usage_synced,LV_TEXT_ALIGN_CENTER,0);
-        s_usage_result=make_label(s_status_dialog,&lv_font_montserrat_14,0x5ff0b9);lv_obj_set_pos(s_usage_result,0,112);lv_obj_set_width(s_usage_result,278);lv_obj_set_style_text_align(s_usage_result,LV_TEXT_ALIGN_CENTER,0);
-        s_usage_popup_body=make_label(s_status_dialog,&lv_font_montserrat_14,0xbcb0cf);lv_obj_set_pos(s_usage_popup_body,0,137);lv_obj_set_width(s_usage_popup_body,278);lv_obj_set_style_text_align(s_usage_popup_body,LV_TEXT_ALIGN_CENTER,0);
+        s_usage_countdown=make_label(s_status_dialog,&lv_font_montserrat_14,0x5ff0b9);lv_obj_set_pos(s_usage_countdown,0,90);lv_obj_set_width(s_usage_countdown,278);lv_obj_set_style_text_align(s_usage_countdown,LV_TEXT_ALIGN_CENTER,0);
+        s_usage_synced=make_label(s_status_dialog,&lv_font_montserrat_14,0xbcb0cf);lv_obj_set_pos(s_usage_synced,0,109);lv_obj_set_width(s_usage_synced,278);lv_obj_set_style_text_align(s_usage_synced,LV_TEXT_ALIGN_CENTER,0);
+        s_usage_result=make_label(s_status_dialog,&lv_font_montserrat_14,0x5ff0b9);lv_obj_set_pos(s_usage_result,0,129);lv_obj_set_width(s_usage_result,278);lv_obj_set_style_text_align(s_usage_result,LV_TEXT_ALIGN_CENTER,0);
+        s_usage_popup_body=make_label(s_status_dialog,&lv_font_montserrat_14,0xbcb0cf);lv_obj_set_pos(s_usage_popup_body,0,149);lv_obj_set_width(s_usage_popup_body,278);lv_obj_set_style_text_align(s_usage_popup_body,LV_TEXT_ALIGN_CENTER,0);
         s_usage_popup_open=true;s_usage_popup_at=0;s_usage_popup_query=0;
         s_usage_check_button=lv_button_create(s_status_dialog);lv_obj_set_size(s_usage_check_button,180,32);lv_obj_align(s_usage_check_button,LV_ALIGN_BOTTOM_LEFT,0,0);lv_obj_set_style_bg_color(s_usage_check_button,lv_color_hex(0x623ca0),0);lv_obj_set_style_radius(s_usage_check_button,10,0);
         lv_obj_add_event_cb(s_usage_check_button,usage_check_clicked,LV_EVENT_CLICKED,NULL);
@@ -2671,6 +2679,15 @@ static void loading_tick(muse_mode_t mode,float now)
         s_loading_view.seconds=0;s_loading_view.late=false;
     }
     const char *step="Waiting for Muse";
+    switch (muse_chat_wait_state()) {
+        case MUSE_CHAT_WAIT_CONNECTING: step="Connecting to Muse"; break;
+        case MUSE_CHAT_WAIT_SENDING: step="Sending to Muse"; break;
+        case MUSE_CHAT_WAIT_ACCEPTED: step="Muse accepted the request"; break;
+        case MUSE_CHAT_WAIT_WORKING: step="Muse is working"; break;
+        case MUSE_CHAT_WAIT_CHECKING: step="Checking for the reply"; break;
+        case MUSE_CHAT_WAIT_RECONNECTING: step="Reconnecting to Muse"; break;
+        default: break;
+    }
     if(st.state==MUSE_MODULE_LLM_PREPARING)step=cloud&&p.opening_ready_ms?"Buffering next sentence":"Preparing local voice";
     if(cloud&&p.source_ready_ms&&!rebuffering)step=p.detail==2?"Downloading audio":p.detail==3?"Checking audio":"Creating and timing voice";
     if(cloud&&p.phase==7)step="Reconnecting audio";

@@ -34,6 +34,17 @@ the report. It contains percentages and timestamps. Keep your report private.
 The popup shows estimated remaining allowance, the last confirmed Muse percentage,
 reset date, and last successful sync. A failed check retains the last good observation.
 
+Starting in 0.7.0, a successful check also captures the exact reset timestamp if Muse's
+subscription-status tool supplies it. The popup counts down in days, hours, minutes and
+seconds. The reset date is labeled UTC. Missing exact timestamps stay unknown instead
+of assuming midnight. A confirmed timestamp can survive a later date-only reading for
+the same period. A new period clears the old timestamp.
+
+The countdown uses elapsed time so a clock adjustment does not make it jump. After a
+reboot, the Module needs either a valid clock or another successful check to restore
+the countdown. At zero the popup asks for a check and keeps the previous allowance
+visible until Muse confirms the reset.
+
 ## Check from the device
 
 Tap **Check now** in Muse account usage. The Core2 asks the paired Muse to use

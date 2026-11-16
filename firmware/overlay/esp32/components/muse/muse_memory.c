@@ -165,7 +165,7 @@ extern const char *identity_node_id(void);
 static void usage_worker(void *unused)
 {
     const char *error="Muse did not return a fresh reading.";
-    char nonce[33],path[100],prompt[1024],thread[37],out[257];
+    char nonce[33],path[100],prompt[1280],thread[37],out[257];
     uint8_t mac[6];
     for(unsigned i=0;i<4;i++)snprintf(nonce+8*i,9,"%08lx",(unsigned long)esp_random());
     if(!muse_link_req_ready()||esp_read_mac(mac,ESP_MAC_WIFI_STA)!=ESP_OK){
@@ -175,9 +175,10 @@ static void usage_worker(void *unused)
     snprintf(path,sizeof(path),"/fs/raw/muse-storyteller/usage/%s.json",nonce);
     snprintf(prompt,sizeof(prompt),
       "Muse Storyteller usage check. Call your own live, read-only subscription-status tool for this exact consumer Muse account. "
-      "Use only its current weekly whole percent used and reset date, in UTC as shown by Muse Settings. Never infer, round, or reuse an earlier reply. "
+      "Use only its current weekly whole percent used and exact next reset timestamp. Keep the reset date in UTC as shown by Muse Settings. Never infer, round, or reuse an earlier reply. "
       "Create the directory if needed and atomically save JSON at ~/muse-storyteller/usage/%s.json. "
-      "On tool success write {\"nonce\":\"%s\",\"state\":\"verified\",\"used\":PERCENT,\"reset\":\"Mon D\",\"observed_at\":UNIX_SECONDS}. "
+      "On tool success write {\"nonce\":\"%s\",\"state\":\"verified\",\"used\":PERCENT,\"reset\":\"Mon D\",\"reset_at\":RESET_UNIX_SECONDS,\"observed_at\":UNIX_SECONDS}. "
+      "Convert the tool's exact reset timestamp to integer Unix seconds. If no exact time is provided, set reset_at to null; never assume midnight. "
       "Use the current VM clock at the check. If the tool is unavailable, write the same nonce with state unavailable and omit all values. "
       "Do not browse, change billing/settings, read chats or credentials, or create audio. Reply briefly when saved.",nonce,nonce);
     cJSON *body=cJSON_CreateObject();
@@ -202,18 +203,23 @@ static void usage_worker(void *unused)
         if(!id||strcmp(id,nonce)||!state){cJSON_Delete(reading);continue;}
         if(strcmp(state,"verified")){cJSON_Delete(reading);error="Muse's allowance tool was unavailable.";break;}
         const cJSON *used=cJSON_GetObjectItemCaseSensitive(reading,"used"),*stamp=cJSON_GetObjectItemCaseSensitive(reading,"observed_at");
+        const cJSON *reset_at=cJSON_GetObjectItemCaseSensitive(reading,"reset_at");
         const char *reset=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(reading,"reset"));
         char month[4]={0};unsigned day=0;int end=0;
         bool valid=integer(used,0,100)&&cJSON_IsNumber(stamp)&&stamp->valuedouble>=1700000000.&&stamp->valuedouble<4102444800.&&
             floor(stamp->valuedouble)==stamp->valuedouble&&reset&&strlen(reset)<=6&&
             sscanf(reset,"%3[A-Za-z] %u%n",month,&day,&end)==2&&reset[end]==0&&day>=1&&day<=31;
         if(!valid){cJSON_Delete(reading);error="Muse returned an invalid reading.";break;}
+        bool exact=cJSON_IsNumber(reset_at)&&floor(reset_at->valuedouble)==reset_at->valuedouble&&
+            reset_at->valuedouble>stamp->valuedouble&&reset_at->valuedouble<=stamp->valuedouble+691200.;
+        if(reset_at&&!cJSON_IsNull(reset_at)&&!exact){cJSON_Delete(reading);error="Muse returned an invalid reset time.";break;}
         cJSON *payload=cJSON_CreateObject();
         if(payload){
             char canonical_reset[8];snprintf(canonical_reset,sizeof(canonical_reset),"%s %u",month,day);
             cJSON_AddNumberToObject(payload,"used",used->valueint);
             cJSON_AddStringToObject(payload,"reset",canonical_reset);
             cJSON_AddNumberToObject(payload,"observed_at",stamp->valuedouble);
+            if(exact)cJSON_AddNumberToObject(payload,"reset_at",reset_at->valuedouble);
             if(s_usage_prediction.valid){
                 cJSON *prediction=cJSON_AddObjectToObject(payload,"prediction");
                 if(prediction){
@@ -469,6 +475,9 @@ bool muse_memory_reply(const cJSON *root,const char *session)
         bool safe=true;for(const char *p=reset;*p;p++)if(*p<32 || *p>126)safe=false;for(const char *p=checked;*p;p++)if(*p<32 || *p>126)safe=false;
         if(safe){
             xSemaphoreTake(s_mutex,portMAX_DELAY);s_usage.valid=true;s_usage.used=used->valueint;s_usage.observed=observed->valueint;s_usage.age=age->valueint;s_usage.received_ms=(uint32_t)(esp_timer_get_time()/1000);
+            const cJSON *reset_at=cJSON_GetObjectItemCaseSensitive(u,"reset_at"),*remaining=cJSON_GetObjectItemCaseSensitive(u,"reset_after_s");
+            s_usage.reset_at=cJSON_IsNumber(reset_at)&&reset_at->valuedouble>=1735689600.&&reset_at->valuedouble<4102444800.?(int64_t)reset_at->valuedouble:0;
+            s_usage.reset_after_s=s_usage.reset_at&&integer(remaining,0,691200)?remaining->valueint:-1;
             s_usage.learned=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"learned"));s_usage.pending=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(u,"pending"));strlcpy(s_usage.reset,reset,sizeof(s_usage.reset));strlcpy(s_usage.checked,checked,sizeof(s_usage.checked));
             const cJSON *accuracy=cJSON_GetObjectItemCaseSensitive(u,"accuracy");
             const cJSON *count=cJSON_GetObjectItemCaseSensitive(accuracy,"count"),*miss=cJSON_GetObjectItemCaseSensitive(accuracy,"latest_error_pp"),*mae=cJSON_GetObjectItemCaseSensitive(accuracy,"recent_mae_tenths");

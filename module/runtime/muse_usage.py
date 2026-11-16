@@ -155,17 +155,29 @@ class Usage:
         observed_at = observation.get('observed_at', time.time())
         if type(observed_at) not in (int, float) or not 0 < observed_at < 4102444800:
             raise ValueError('Invalid observation time')
+        reset_at = observation.get('reset_at')
+        if reset_at is not None:
+            if type(reset_at) is not int or not observed_at < reset_at <= observed_at + 8 * DAY:
+                raise ValueError('Invalid exact reset time')
+            reset_date = datetime.fromtimestamp(reset_at, timezone.utc)
+            if f'{reset_date:%b} {reset_date.day}' != reset:
+                raise ValueError('Reset time does not match the verified UTC date')
         with self.state() as state:
             anchor = state['anchor']
             if anchor and observed_at <= anchor.get('observed_at', 0):
                 if observed_at < anchor['observed_at'] or used != anchor['used'] or reset != anchor['reset']:
                     raise ValueError('Older or conflicting observation rejected')
+                if reset_at is not None and reset_at != anchor.get('reset_at'):
+                    raise ValueError('Conflicting reset time rejected')
             else:
+                if (reset_at is None and anchor and reset == anchor['reset']
+                        and observed_at < (anchor.get('reset_at') or 0) <= observed_at + 8 * DAY):
+                    reset_at = anchor['reset_at']
                 self.score(state, observation, used, reset, observed_at)
                 self.observe(state, anchor, used, reset, observed_at)
                 state['anchor'] = dict(used=used, reset=reset, checked=checked, chars=state['chars'],
                                        counts=state['counts'].copy(), received=time.time(), observed_at=observed_at,
-                                       boot=self.boot(), tick=time.monotonic())
+                                       boot=self.boot(), tick=time.monotonic(), reset_at=reset_at)
         return self.snapshot()
 
     def score(self, state, observation, used, reset, observed_at):
@@ -277,8 +289,12 @@ class Usage:
         if elapsed is not None:
             increase += min(elapsed / DAY, 1) * state['shared']
         learned = local is not None or bool(state['rate'])
+        reset_at = anchor.get('reset_at')
+        remaining = (max(0, math.ceil(reset_at - anchor['observed_at'] - elapsed))
+                     if reset_at and elapsed is not None else -1)
         return dict(used=min(100, anchor['used'] + math.floor(increase + 0.5)), observed=anchor['used'],
                     reset=anchor['reset'], checked=anchor['checked'],
+                    reset_at=reset_at or 0, reset_after_s=remaining,
                     age=min(7 * DAY, int(elapsed)) if elapsed is not None else 7 * DAY,
                     learned=learned, pending=delta > 0 and not learned)
 

@@ -1,6 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
+
+static inline int muse_status_reset_seconds(int remaining,uint32_t received_ms,uint32_t now_ms)
+{
+    if(remaining<0)return -1;
+    uint32_t elapsed=(now_ms-received_ms)/1000;
+    return elapsed>=(uint32_t)remaining?0:remaining-(int)elapsed;
+}
 
 /* Unknown evidence never becomes a made-up full gauge. */
 static inline bool muse_status_percent_valid(int pct){return pct>=0 && pct<=100;}

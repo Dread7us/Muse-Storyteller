@@ -1,5 +1,24 @@
 # Release history
 
+## 0.7.3
+
+- Wait for Wi-Fi to rejoin after a battery wake, and keep it available while a Muse request is pending.
+- Distinguish sending, accepted requests, active work, and reconnection on the Core2. Give accepted requests more time to return a reply.
+- On a broken reply stream, reconnect and check for the matching saved response through the existing Muse pairing. Never automatically resubmit an email or other task whose delivery is uncertain.
+
+## 0.7.2
+
+- Reflow short source lines within a paragraph to fit the reader width. Keep blank-line paragraphs, headings, lists, quotes, code, and explicit Markdown line breaks.
+
+## 0.7.1
+
+- Clean up stray spaces, blank lines and paragraph breaks in the conversation reader. Bold speaker labels and keep code indentation, nested lists and word highlighting intact.
+
+## 0.7.0
+
+- Show a live reset countdown in the Muse usage popup using the exact UTC timestamp returned by its subscription-status tool.
+- Keep recording the displayed estimate before each verified check. Preserve the last confirmed allowance when a reset is due, until a fresh check confirms the new period.
+
 ## 0.6.1
 
 - Learn the Muse allowance estimate from separate prompt, reply and turn counts. Preserve recent calibration history across weekly resets and account for recurring increases while the device is idle.
