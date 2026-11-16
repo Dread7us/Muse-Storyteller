@@ -100,6 +100,59 @@ use synthetic readings to verify check-start predictions, repeated deliveries, r
 boundaries, and equal-sized accuracy comparisons. Live accuracy history builds from
 subsequent verified checks.
 
+## Edition 0.7.0 reset countdown checks
+
+The Core2 application passed compilation, flash digest, healthy boot, advancing UI
+frames, and saved voice, volume and playback-setting checks. The Module estimator
+update preserved its calibration anchor, counters and prior learned rate.
+
+The real device's Check now action completed through diagnostic UI control. The
+result included an exact reset timestamp, and the check-start estimate and verified
+reading were saved in the private accuracy history. Successive device status samples
+confirmed the countdown decreased with elapsed time. A native screenshot confirmed the
+countdown, sync status, accuracy text and both buttons fit inside the popup. The tablet's
+SuperDisplay tunnel and established display connection remained active.
+
+The portable suite ran 121 tests successfully on Windows with 21 platform-dependent
+skips. Reset-time tests cover invalid or conflicting timestamps, expiry without an
+assumed allowance reset, clock changes, reboot behavior, legacy date-only checks and
+new weekly periods. The C helper's timer-wrap regression runs on hosts with a native
+C compiler. The reference firmware build and live countdown supplied device coverage.
+
+## Edition 0.7.1 reader formatting checks
+
+The Core2 firmware compiled and passed the application size check. Ten native
+renderer cases passed, including paragraph boundaries, whitespace cleanup,
+source offsets for word highlighting, code indentation, and link hit ranges.
+Five reader layout cases and four conversation model cases also passed on Windows.
+The portable suite ran 121 cases with 21 platform-dependent skips.
+
+The Core2 application passed flash digest and boot checks. The built-in local
+playback sample completed after a pause and resume, with advancing word offsets.
+A device screenshot captured the bold speaker label and active word highlight.
+Voice and volume settings passed the before-and-after check. The tablet route
+remained healthy during the update.
+
+## Edition 0.7.3 Muse connection recovery
+
+The native lifecycle harness checks an accepted turn still waiting at 67 seconds,
+the bounded unconfirmed-send timeout, saved-reply correlation and deduplication,
+and recovery that reads the reply without submitting another prompt. The Core2
+application built within its slot, passed flash readback, and booted with the existing
+voice and volume. A harmless request on the connected Core2 was accepted in about
+2 seconds and the turn completed in about 17 seconds. These checks do not reproduce
+the original email timeout or the full battery-only hardware setup.
+
+## Edition 0.7.2 paragraph wrapping checks
+
+Twelve native renderer cases passed, covering prose reflow, explicit line breaks,
+structured blocks, and word offsets. A representative saved reply reflowed
+within its original paragraph boundaries, and every word mapped to the correct
+display range. The portable suite ran 121 cases with 21 platform-dependent skips.
+The firmware passed build, flash digest, and boot checks. On Core2, the local
+playback sample finished after pause and resume with advancing word highlights
+and the saved voice settings intact. SuperDisplay's tablet route remained healthy.
+
 ## Edition 0.2.1 startup checks
 
 The firmware compiled and the application-only update passed digest and healthy-boot

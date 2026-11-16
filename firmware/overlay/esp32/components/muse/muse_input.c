@@ -50,6 +50,8 @@
 #include "muse_module_llm.h"
 #include "muse_native_voice.h"
 #include "muse_memory.h"
+#include "muse_status_model.h"
+#include "esp_timer.h"
 #endif
 #include "muse_state.h"
 #include "muse_ui.h"
@@ -483,6 +485,9 @@ static bool update_wifi_nap(TickType_t now, bool paused)
     }
     bool nap = paused && !muse_voice_notes_waiting()
                && (s_nap_now || (s_cpu_low && now - low_since >= pdMS_TO_TICKS(WIFI_NAP_MS)));
+#if CONFIG_MUSE_MODULE_LLM
+    nap = nap && muse_chat_wait_state() == MUSE_CHAT_WAIT_NONE;
+#endif
     if (nap != napping) {
         napping = nap;
         ESP_LOGI(TAG, "Wi-Fi %s", nap ? "napping" : "waking");
@@ -774,7 +779,8 @@ static bool console_command(char *line, bool whole)
 #if CONFIG_MUSE_MODULE_LLM
     if (!strcmp(line, "usage.status")) {
         muse_usage_view_t u={0};bool valid=muse_memory_usage_copy(&u);
-        printf("@usage {\"valid\":%s,\"used\":%u,\"observed\":%u,\"age\":%u,\"learned\":%s,\"pending\":%s,\"reset\":\"%s\",\"checked\":\"%s\",\"refresh\":\"%s\",\"note\":\"%s\",\"last_sync\":\"%s\"}\n",valid?"true":"false",u.used,u.observed,u.age,u.learned?"true":"false",u.pending?"true":"false",u.reset,u.checked,u.refresh_state,u.refresh_note,u.last_sync);fflush(stdout);return true;
+        int remaining=valid?muse_status_reset_seconds(u.reset_after_s,u.received_ms,(uint32_t)(esp_timer_get_time()/1000)):-1;
+        printf("@usage {\"valid\":%s,\"used\":%u,\"observed\":%u,\"age\":%u,\"learned\":%s,\"pending\":%s,\"reset\":\"%s\",\"reset_at\":%lld,\"reset_in\":%d,\"checked\":\"%s\",\"refresh\":\"%s\",\"note\":\"%s\",\"last_sync\":\"%s\"}\n",valid?"true":"false",u.used,u.observed,u.age,u.learned?"true":"false",u.pending?"true":"false",u.reset,(long long)u.reset_at,remaining,u.checked,u.refresh_state,u.refresh_note,u.last_sync);fflush(stdout);return true;
     }
     if (!strcmp(line, "memory.status")) {
         muse_memory_view_t v={0};char *text=heap_caps_calloc(1,8192,MUSE_BIG_CAPS);

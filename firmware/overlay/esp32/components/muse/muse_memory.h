@@ -43,6 +43,8 @@ typedef struct {
     unsigned accuracy_count,accuracy_mae;
     int accuracy_miss;
     uint32_t received_ms;
+    int64_t reset_at;
+    int reset_after_s;
     char reset[20],checked[24];
 } muse_usage_view_t;
 bool muse_memory_usage_copy(muse_usage_view_t *out);

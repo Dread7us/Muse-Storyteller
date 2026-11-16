@@ -5,13 +5,21 @@ ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'firmware/overlay/esp32/components/muse'
 HARNESS=r'''
 #include "muse_wait_estimate.h"
+#include "muse_status_model.h"
 #include <assert.h>
 #include <math.h>
 #include <string.h>
 int main(int argc,char **argv){
  assert(argc==2);muse_wait_model_t model;muse_wait_defaults(&model);
  muse_wait_countdown_t state={0};muse_wait_view_t view;
- if(!strcmp(argv[1],"ready_gate")){
+ if(!strcmp(argv[1],"usage_reset")){
+  assert(muse_status_reset_seconds(-1,0,1000)==-1);
+  assert(muse_status_reset_seconds(0,1000,1000)==0);
+  assert(muse_status_reset_seconds(3600,1000,92000)==3509);
+  assert(muse_status_reset_seconds(30,1000,31000)==0);
+  assert(muse_status_reset_seconds(30,1000,99000)==0);
+  assert(muse_status_reset_seconds(10,UINT32_MAX-500,1499)==8);
+ }else if(!strcmp(argv[1],"ready_gate")){
   view=muse_wait_countdown(&state,0,50,false);assert(view.progress_percent==0&&view.seconds==50);
   view=muse_wait_countdown(&state,500,50,false);assert(view.progress_percent<100&&view.late);
   view=muse_wait_countdown(&state,500,50,true);assert(view.progress_percent==100&&!view.late&&view.seconds==0);
@@ -47,6 +55,7 @@ class Countdown(unittest.TestCase):
   src=Path(cls.temp.name)/'wait.c';src.write_text(HARNESS);cls.exe=src.with_suffix('')
   subprocess.run([cc,'-std=c11','-I',str(SOURCE),str(src),str(SOURCE/'muse_wait_estimate.c'),'-lm','-o',str(cls.exe)],check=True,capture_output=True)
  def run_case(self,name):subprocess.run([str(self.exe),name],check=True,capture_output=True)
+ def test_usage_reset_stops_at_zero_and_handles_the_millisecond_wrap(self):self.run_case('usage_reset')
  def test_full_progress_is_reserved_for_real_readiness(self):self.run_case('ready_gate')
  def test_revised_estimates_cannot_drain_the_bar(self):self.run_case('monotonic')
  def test_preparation_scales_with_opening_word_count(self):self.run_case('word_count')

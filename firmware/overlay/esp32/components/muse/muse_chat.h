@@ -140,6 +140,21 @@ void muse_hatch_text_cancel(void);
  * is available only in CONFIG_MUSE_MODULE_LLM builds. */
 bool muse_chat_recognized_turn(const char *text);
 
+#if CONFIG_MUSE_MODULE_LLM
+typedef enum {
+    MUSE_CHAT_WAIT_NONE,
+    MUSE_CHAT_WAIT_CONNECTING,
+    MUSE_CHAT_WAIT_SENDING,
+    MUSE_CHAT_WAIT_ACCEPTED,
+    MUSE_CHAT_WAIT_WORKING,
+    MUSE_CHAT_WAIT_CHECKING,
+    MUSE_CHAT_WAIT_RECONNECTING,
+} muse_chat_wait_t;
+
+/* Current transport stage, read by the UI without waiting on the network task. */
+muse_chat_wait_t muse_chat_wait_state(void);
+#endif
+
 /*
  * Prints one "@chat" line per call (more if `text` is long): the type, then the
  * printf-style `fields` (JSON members, or NULL), then `text` escaped (or none).

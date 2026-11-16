@@ -134,6 +134,14 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 #define AUTO_RETRY_MAX_US (120 * 1000000LL)
 #define FINAL_TIMEOUT_US (15 * 1000000LL)  /* release -> final transcript */
 #define REPLY_TIMEOUT_US (60 * 1000000LL)  /* chat posted -> first assistant message */
+#if CONFIG_MUSE_MODULE_LLM
+#define CHAT_ACK_TIMEOUT_US (25 * 1000000LL)
+#define CHAT_WIFI_WAKE_US (10 * 1000000LL)
+#define CHAT_REPLY_IDLE_US (150 * 1000000LL)
+#define CHAT_RECONNECT_US (45 * 1000000LL)
+#define CHAT_HISTORY_INTERVAL_US (15 * 1000000LL)
+#define CHAT_HISTORY_TIMEOUT_US (6 * 1000000LL)
+#endif
 #define TURN_CAP_US (180 * 1000000LL)
 #define SETTLE_US (3 * 1000000LL)          /* quiet period that ends a turn */
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
@@ -172,6 +180,10 @@ static std::atomic<uint32_t> s_gen{0};
 static std::atomic<bool> s_can_restart{false},s_transport_pending{false},s_playback_active{false};
 static bool s_restart_wait,s_bench_reply,s_local_only,s_replaying;
 static std::atomic<bool> s_resting{false};
+#if CONFIG_MUSE_MODULE_LLM
+static std::atomic<muse_chat_wait_t> s_chat_wait{MUSE_CHAT_WAIT_NONE};
+static bool s_chat_wifi_held;
+#endif
 
 /* ---- Connection ---- */
 
@@ -204,7 +216,8 @@ static char s_native_id[40],s_native_thread[160],s_native_started[32];
 static void native_tick(void);
 /* ---- Streams on the connection ---- */
 
-enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_NATIVE, K_NATIVE_END, K_NATIVE_FILE };
+enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_NATIVE, K_NATIVE_END, K_NATIVE_FILE,
+                       K_CHAT_HISTORY };
 
 struct stream_t {
     int64_t id;
@@ -286,6 +299,11 @@ struct turn_t {
     bool native_direct;
     int64_t dict_id, chat_id;
     int64_t start_us, end_sent_us, chat_us, last_event_us, last_content_us;
+#if CONFIG_MUSE_MODULE_LLM
+    int64_t history_id, history_started_us, history_next_us;
+    int64_t reconnect_since_us;
+    bool reply_delivery_unconfirmed, recovered_subscription;
+#endif
     int64_t playback_paused_us, playback_pause_check;
     uint64_t sent24;         /* 24 kHz frames sent to dictation */
     resampler_t up;
@@ -1022,6 +1040,10 @@ static void turn_reset_streams(void)
 {
     send_reset(s_turn.dict_id);
     send_reset(s_turn.chat_id);
+#if CONFIG_MUSE_MODULE_LLM
+    send_reset(s_turn.history_id);
+    s_turn.history_id = 0;
+#endif
     for (auto &s : s_streams) {
         if (s.kind == K_TTS) {
             send_reset(s.id);
@@ -1037,6 +1059,11 @@ static void turn_finish(void)
     s_pending_reply_msg=-1;s_pending_reply[0]=0;
     s_playback_active=false;
 #if CONFIG_MUSE_MODULE_LLM
+    s_chat_wait = MUSE_CHAT_WAIT_NONE;
+    if (s_chat_wifi_held) {
+        s_chat_wifi_held = false;
+        muse_wifi_keep_awake(false);
+    }
     muse_module_llm_cancel(s_turn.gen);
 #endif
     turn_reset_streams();
@@ -1095,10 +1122,36 @@ static bool turn_start(uint32_t gen, bool text, bool network=true)
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+#if CONFIG_MUSE_MODULE_LLM
+    if (network && !text && muse_hatch_configured()) {
+        s_chat_wait = MUSE_CHAT_WAIT_CONNECTING;
+        s_chat_wifi_held = true;
+        muse_wifi_keep_awake(true);
+        if (!muse_wifi_connected()) {
+            // On battery the screen can wake before Wi-Fi has rejoined.
+            const int64_t deadline = now_us() + CHAT_WIFI_WAKE_US;
+            muse_wifi_apply();
+            while (!muse_wifi_connected() && now_us() < deadline && gen == s_gen.load()) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
+        if (gen != s_gen.load()) {
+            turn_finish();
+            return false;
+        }
+    }
+#endif
     if (network && !ensure_connected()) {
-        turn_fail(muse_hatch_configured() ? "CAN'T REACH MUSE" : "MUSE NOT SET UP");
+        turn_fail(!muse_hatch_configured() ? "MUSE NOT SET UP" :
+                  !muse_wifi_connected() ? "WI-FI OFFLINE - CHECK CONNECTION" : "CAN'T REACH MUSE");
         return false;
     }
+#if CONFIG_MUSE_MODULE_LLM
+    if (network && !text && gen != s_gen.load()) {
+        turn_finish();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -1298,6 +1351,13 @@ static void send_chat(const char *text, const char *modality)
     char *json = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     size_t len = json ? strlen(json) : 0;
+#if CONFIG_MUSE_MODULE_LLM
+    if (!json) {
+        turn_fail("NOT ENOUGH MEMORY TO SEND");
+        return;
+    }
+    s_chat_wait = MUSE_CHAT_WAIT_SENDING;
+#endif
     bool whole = len <= CHAT_PART;
     s_turn.chat_id = json ? open_stream(K_CHAT, "POST", "/chat/stream", "application/json", nullptr,
                                         whole ? json : nullptr, whole) : 0;
@@ -1309,12 +1369,22 @@ static void send_chat(const char *text, const char *modality)
     cJSON_free(json);
     if (!ok) {
         disconnect("chat/stream failed");
+#if CONFIG_MUSE_MODULE_LLM
+        s_auto_next_us = now_us() + AUTO_RETRY_MIN_US;
+        // A transport write can fail after the server receives the request.
+        // Do not repeat a potentially side-effecting task.
+        turn_fail("SEND UNCONFIRMED - CHECK MUSE APP");
+#else
         turn_fail("CAN'T REACH MUSE");
+#endif
         return;
     }
     if(s_turn.native_job[0])s_turn.native_started=muse_native_voice_begin(s_turn.native_job,s_turn.gen,s_turn.native_voice,s_turn.native_speed);
     s_turn.body_sent = len;
     s_turn.chat_us = s_turn.last_event_us = now_us();
+#if CONFIG_MUSE_MODULE_LLM
+    s_turn.history_next_us = s_turn.chat_us + CHAT_HISTORY_INTERVAL_US;
+#endif
     s_turn.phase = P_WAIT_REPLY;
 }
 
@@ -1414,6 +1484,15 @@ static bool is_user_id(const char *id)
     return id && id[0] && (!strcmp(id, s_turn.user_ids[0]) || !strcmp(id, s_turn.user_ids[1]));
 }
 
+static const char *reply_parent(cJSON *payload)
+{
+    const char *parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "reply_to_message_id"));
+    if (!parent || !parent[0]) {
+        parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "parent_message_id"));
+    }
+    return parent;
+}
+
 /* The message `id` if it belongs to this turn, binding it on first sight; else -1. */
 static int bind_msg(const char *id, cJSON *payload)
 {
@@ -1424,10 +1503,7 @@ static int bind_msg(const char *id, cJSON *payload)
     if (i >= 0 || s_turn.phase != P_WAIT_REPLY) {
         return i;
     }
-    const char *parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "reply_to_message_id"));
-    if (!parent) {
-        parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "parent_message_id"));
-    }
+    const char *parent = reply_parent(payload);
     /* Once the ack names our message, replies to anything else are someone else's. */
     if (parent && parent[0] && s_turn.acked && !is_user_id(parent) && find_msg(parent) < 0) {
         muse_chat_reject(&s_turn.rejected, id);
@@ -1598,10 +1674,14 @@ static bool accept_event_sequence(const char *event,int64_t value){
 
 static void on_event(cJSON *line)
 {
-    if (strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(line, "type")) ?: "", "event") != 0) {
+    const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(line, "type"));
+    if (!type || strcmp(type, "event")) {
         return;   /* the subscription ack */
     }
-    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
+    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event"));
+    if (!event) {
+        return;
+    }
     cJSON *seq = cJSON_GetObjectItem(line, "seq");
     if(cJSON_IsNumber(seq)&&!accept_event_sequence(event,(int64_t)seq->valuedouble))return;
     if (s_turn.phase != P_WAIT_REPLY) {
@@ -1610,8 +1690,7 @@ static void on_event(cJSON *line)
     cJSON *payload = cJSON_GetObjectItem(line, "payload");
 
     if (!strcmp(event,"agent.status")||!strcmp(event,"task.status")) {
-        const char *parent=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"reply_to_message_id"));
-        if(!parent)parent=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"parent_message_id"));
+        const char *parent=reply_parent(payload);
         bool linked=parent&&parent[0]&&(is_user_id(parent)||find_msg(parent)>=0);
         if(parent&&parent[0]&&!linked)return;
         const char *message=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"message_id"));
@@ -1622,6 +1701,11 @@ static void on_event(cJSON *line)
         bool was=s_turn.agent_busy;
         if(!task_progress_update(s_turn.task_progress,!strcmp(event,"task.status"),id,status,activity,linked))return;
         s_turn.agent_busy=task_progress_busy(s_turn.task_progress);
+#if CONFIG_MUSE_MODULE_LLM
+        if (s_turn.acked && !s_turn.history_id) {
+            s_chat_wait = s_turn.agent_busy ? MUSE_CHAT_WAIT_WORKING : MUSE_CHAT_WAIT_ACCEPTED;
+        }
+#endif
         if(was!=s_turn.agent_busy){
             printf("@chat_work {\"busy\":%s,\"running\":%u,\"finished\":%s,\"failed\":%s}\n",s_turn.agent_busy?"true":"false",s_turn.task_progress.count,s_turn.task_progress.finished?"true":"false",s_turn.task_progress.failed?"true":"false");fflush(stdout);
             if(s_turn.text)muse_hatch_console("busy",nullptr,"\"on\":%s",s_turn.agent_busy?"true":"false");
@@ -1638,6 +1722,17 @@ static void on_event(cJSON *line)
         return;
     }
     const char *id = msg_id(payload, line);
+#if CONFIG_MUSE_MODULE_LLM
+    if (s_turn.recovered_subscription) {
+        // A new subscription has its own sequence. During recovery use only
+        // complete messages correlated to this turn, never replay old deltas.
+        const char *parent = reply_parent(payload);
+        if (!full || !id || (!is_user_id(parent) && find_msg(id) < 0 &&
+                             (!parent || find_msg(parent) < 0))) {
+            return;
+        }
+    }
+#endif
     int i = id ? bind_msg(id, payload) : -1;
     if (i < 0) {
         return;
@@ -1665,7 +1760,7 @@ static void on_event(cJSON *line)
     }
 }
 
-static void on_chat_ack(stream_t *s)
+static bool on_chat_ack(stream_t *s)
 {
     s->line[s->len] = '\0';
     cJSON *root = cJSON_Parse(s->line);
@@ -1674,16 +1769,100 @@ static void on_chat_ack(stream_t *s)
     const char *keys[] = { "message_id", "reply_to_message_id" };
     for (int k = 0; k < 2; k++) {
         const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(obj, keys[k]));
-        if (id) {
+        if (id && id[0] && strlen(id) < sizeof(s_turn.user_ids[k])) {
             strlcpy(s_turn.user_ids[k], id, sizeof(s_turn.user_ids[k]));
         }
     }
-    s_turn.acked = true;
-    mark(M_ACK);
-    ESP_LOGI(TAG, "chat/stream ack: user message %s", s_turn.user_ids[0]);
+    const bool accepted = !s->overflow && cJSON_IsObject(obj) &&
+        !cJSON_IsFalse(cJSON_GetObjectItem(root, "ok")) &&
+        (s_turn.user_ids[0][0] || s_turn.user_ids[1][0] ||
+         cJSON_IsTrue(cJSON_GetObjectItem(root, "ok")));
     cJSON_Delete(root);
+    if (!accepted) {
+        return false;
+    }
+    s_turn.acked = true;
+#if CONFIG_MUSE_MODULE_LLM
+    s_chat_wait = s_turn.agent_busy ? MUSE_CHAT_WAIT_WORKING : MUSE_CHAT_WAIT_ACCEPTED;
+#endif
+    mark(M_ACK);
+    ESP_LOGI(TAG, "chat/stream ack");
     emit(MUSE_HATCH_EV_SENT, nullptr);
+    return true;
 }
+
+#if CONFIG_MUSE_MODULE_LLM
+/* Begin saved reply recovery. */
+static bool recover_saved_reply(cJSON *root)
+{
+    cJSON *result = cJSON_GetObjectItem(root, "result");
+    cJSON *container = result ? result : root;
+    cJSON *messages = cJSON_IsArray(container) ? container : cJSON_GetObjectItem(container, "messages");
+    cJSON *reply = cJSON_GetArrayItem(messages, 0); // The request asks for one message.
+    if (!reply) {
+        reply = cJSON_GetObjectItem(container, "message");
+    }
+    const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(reply, "role"));
+    const char *id = msg_id(reply, nullptr);
+    if (!role || strcmp(role, "assistant") || !id || strlen(id) >= sizeof(s_turn.msgs[0].id) ||
+        cJSON_IsFalse(cJSON_GetObjectItem(reply, "display_text_ready"))) {
+        return false;
+    }
+    int known = find_msg(id);
+    const char *parent = reply_parent(reply);
+    if (!is_user_id(parent) && (!parent || find_msg(parent) < 0) &&
+        !(known >= 0 && s_turn.acked)) {
+        return false;
+    }
+    const char *text = reply_final_text(reply, id, s_final_reply, sizeof(s_final_reply));
+    if (s_turn.phase != P_WAIT_REPLY || !text || !text[0]) {
+        return false;
+    }
+    if (known >= 0 && s_turn.msgs[known].done && s_turn.texts &&
+        !strcmp(s_turn.texts + known * TEXT_MAX, text)) {
+        return false;
+    }
+    int index = bind_msg(id, reply);
+    if (index < 0) {
+        return false;
+    }
+    s_turn.last_event_us = s_turn.last_content_us = now_us();
+    message_done(index, text);
+    return true;
+}
+
+static void check_saved_reply(int64_t now)
+{
+    if (s_turn.history_id) {
+        if (now - s_turn.history_started_us < CHAT_HISTORY_TIMEOUT_US) {
+            return;
+        }
+        send_reset(s_turn.history_id);
+        s_turn.history_id = 0;
+        s_chat_wait = s_turn.agent_busy ? MUSE_CHAT_WAIT_WORKING : MUSE_CHAT_WAIT_ACCEPTED;
+    }
+    if (s_turn.text || s_local_only || !s_connected || !s_turn.acked ||
+        (!s_turn.user_ids[0][0] && !s_turn.user_ids[1][0]) ||
+        now < s_turn.history_next_us || now - s_turn.last_content_us < CHAT_HISTORY_INTERVAL_US) {
+        return;
+    }
+    for (int i = 0; i < s_turn.nmsgs; ++i) {
+        if (s_turn.msgs[i].done && s_turn.msgs[i].len && !s_turn.agent_busy &&
+            !s_turn.recovered_subscription) {
+            return;
+        }
+    }
+    s_turn.history_next_us = now + CHAT_HISTORY_INTERVAL_US;
+    // Existing authenticated Muse route. This never submits or repeats a prompt.
+    s_turn.history_id = open_stream(K_CHAT_HISTORY, "GET", "/chat/history?limit=1",
+                                    nullptr, "application/json", nullptr, true);
+    if (s_turn.history_id) {
+        s_turn.history_started_us = now;
+        s_chat_wait = MUSE_CHAT_WAIT_CHECKING;
+    }
+}
+/* End saved reply recovery. */
+#endif
 
 /* ---- Turn: speech ---- */
 
@@ -2000,8 +2179,38 @@ static void check_turn(void)
         turn_done(false);
         return;
     }
+#if CONFIG_MUSE_MODULE_LLM
+    if (!text && s_turn.chat_posted && !s_local_only && !s_replaying) {
+        if (!s_turn.acked && !s_turn.nmsgs && t - s_turn.chat_us >= CHAT_ACK_TIMEOUT_US) {
+            turn_fail("SEND UNCONFIRMED - CHECK MUSE APP");
+            return;
+        }
+        bool awaiting_text = !s_turn.nmsgs;
+        for (int i = 0; i < s_turn.nmsgs; ++i) {
+            awaiting_text |= !s_turn.msgs[i].done;
+        }
+        // A transport keepalive is not reply progress. Measure from the last
+        // actual reply content, or a task-status update while Muse is working.
+        const int64_t latest = s_turn.agent_busy ? s_turn.last_event_us :
+            (s_turn.last_content_us ? s_turn.last_content_us : s_turn.chat_us);
+        if (s_turn.task_progress.failed && !s_turn.nmsgs &&
+            t - s_turn.last_event_us >= CHAT_HISTORY_INTERVAL_US) {
+            turn_fail("MUSE TASK FAILED - CHECK CHAT");
+            return;
+        }
+        if ((awaiting_text || s_turn.agent_busy) && s_turn.tts_msg < 0 &&
+            t - latest >= CHAT_REPLY_IDLE_US) {
+            turn_fail(s_turn.agent_busy ? "MUSE TASK STALLED - CHECK MUSE APP" :
+                                          "REPLY NOT RECEIVED - CHECK MUSE APP");
+            return;
+        }
+    }
+#endif
     if (!s_turn.nmsgs) {
         /* Wait as long as the agent says it's working; the turn cap still applies. */
+#if CONFIG_MUSE_MODULE_LLM
+        if (!text) return; // The device's acknowledged-turn deadlines above apply.
+#endif
         if (t - s_turn.chat_us > (text ? TEXT_REPLY_TIMEOUT_US : REPLY_TIMEOUT_US) && !s_turn.agent_busy) {
             turn_fail("NO REPLY FROM MUSE");
         }
@@ -2232,8 +2441,21 @@ static void stream_data(stream_t *s, ConstByteSpan data)
         size_t take = data.size() < s->cap - 1 - s->len ? data.size() : s->cap - 1 - s->len;
         memcpy(s->line + s->len, data.data(), take);
         s->len += take;
+        s->overflow |= take != data.size();
         break;
     }
+#if CONFIG_MUSE_MODULE_LLM
+    case K_CHAT_HISTORY: {
+        size_t room = s->cap - 1 - s->len;
+        if (!s->overflow && data.size() <= room) {
+            memcpy(s->line + s->len, data.data(), data.size());
+            s->len += data.size();
+        } else {
+            s->overflow = true;
+        }
+        break;
+    }
+#endif
     case K_TTS:
         if (s->msg == s_turn.tts_msg) {
             tts_data(data.data(), data.size());
@@ -2264,15 +2486,42 @@ static bool stream_end(stream_t *s, bool ok)
         on_dictation_end(ok);
         break;
     case K_CHAT:
-        if (ok) {
-            on_chat_ack(s);
+        if (ok && s->status >= 200 && s->status < 300 && !on_chat_ack(s)) {
+            // A reply may still arrive on the subscription before the ACK deadline.
+            ESP_LOGW(TAG, "chat acknowledgement missing or invalid");
         }
         close_stream(s);
         s_turn.chat_id = 0;
         if (!ok) {
-            turn_fail("MUSE DIDN'T TAKE IT");
+            if (s->status == 429) {
+                turn_fail("MUSE IS RATE LIMITED - TRY LATER");
+            } else if (s->status == 401 || s->status == 403) {
+                turn_fail("MUSE ACCESS REFUSED - CHECK SETTINGS");
+            } else if (s->status >= 400 && s->status < 500 && s->status != 408) {
+                turn_fail("MUSE REJECTED THE REQUEST");
+            } else {
+                turn_fail("SEND UNCONFIRMED - CHECK MUSE APP");
+            }
         }
         break;
+#if CONFIG_MUSE_MODULE_LLM
+    case K_CHAT_HISTORY: {
+        const int status = s->status;
+        s_turn.history_id = 0;
+        s_chat_wait = s_turn.agent_busy ? MUSE_CHAT_WAIT_WORKING : MUSE_CHAT_WAIT_ACCEPTED;
+        if (status >= 400 && status < 500 && status != 408 && status != 429) {
+            s_turn.history_next_us = INT64_MAX; // The current server refused the lookup.
+        }
+        cJSON *root = ok && status >= 200 && status < 300 && !s->overflow
+            ? cJSON_ParseWithLength(s->line, s->len) : nullptr;
+        close_stream(s);
+        if (root) {
+            if (recover_saved_reply(root)) ESP_LOGI(TAG, "recovered correlated Muse reply");
+            cJSON_Delete(root);
+        }
+        break;
+    }
+#endif
     case K_TTS:
         tts_end(s, ok);
         break;
@@ -2380,11 +2629,21 @@ static bool poll_socket(void)
 static void drop_connection(const char *why)
 {
     bool in_turn = s_turn.phase != P_IDLE;
-    bool cached=s_turn.native_direct&&s_turn.tts_msg>=0&&s_turn.msgs[s_turn.tts_msg].external_key[0];
     disconnect(why);
     s_auto_next_us = now_us() + s_auto_backoff_us;
-    if(in_turn&&cached){s_local_only=true;s_turn.agent_busy=false;}
-    else if (in_turn) {
+#if CONFIG_MUSE_MODULE_LLM
+    if (s_turn.phase == P_WAIT_REPLY && !s_turn.text && s_turn.acked &&
+        (s_turn.user_ids[0][0] || s_turn.user_ids[1][0])) {
+        if (!s_turn.reconnect_since_us) s_turn.reconnect_since_us = now_us();
+        s_turn.recovered_subscription = true;
+        s_turn.chat_id = s_turn.history_id = 0;
+        s_auto_next_us = now_us() + 250000LL;
+        s_chat_wait = MUSE_CHAT_WAIT_RECONNECTING;
+    } else if (in_turn && s_turn.chat_posted && !s_turn.acked) {
+        turn_fail("SEND UNCONFIRMED - CHECK MUSE APP");
+    } else
+#endif
+    if (in_turn) {
         turn_fail("LOST CONNECTION TO MUSE");
     }
     muse_hatch_report(MUSE_HATCH_UNTESTED, "");
@@ -2567,7 +2826,7 @@ static void hatch_task(void *arg)
         /* Resting, the socket's keepalive (PING_US) needs no quicker polls.
          * Resting unconnected, Wi-Fi may nap (muse_wifi_nap): wait for a
          * turn or for waking (CMD_WAKE) instead of watching it. */
-        int wait_ms = !s_connected ? (s_resting ? -1 : 200) : s_turn.phase != P_IDLE ? 2 : s_resting ? 500 : 20;
+        int wait_ms = !s_connected ? (s_resting && s_turn.phase == P_IDLE ? -1 : 200) : s_turn.phase != P_IDLE ? 2 : s_resting ? 500 : 20;
         TickType_t wait = wait_ms < 0 ? portMAX_DELAY : pdMS_TO_TICKS(wait_ms);
         if (xQueueReceive(s_cmds, &cmd, wait) == pdTRUE) {
             handle(cmd);
@@ -2580,11 +2839,27 @@ static void hatch_task(void *arg)
         }
         native_tick();
         if (!s_connected) {
+#if CONFIG_MUSE_MODULE_LLM
+            if (s_turn.reconnect_since_us && s_turn.phase == P_WAIT_REPLY) {
+                // Let audio already handed to the Module finish during recovery.
+                decode();
+                if (s_turn.tts_msg < 0 && now_us() - s_turn.reconnect_since_us >= CHAT_RECONNECT_US) {
+                    turn_fail("MUSE CONNECTION LOST - CHECK MUSE APP");
+                }
+            }
+#endif
             if (!muse_wifi_connected()) {
                 s_auto_next_us = 0;
                 s_auto_backoff_us = AUTO_RETRY_MIN_US;
             } else if (muse_hatch_configured() && now_us() >= s_auto_next_us) {
                 if (ensure_connected()) {
+#if CONFIG_MUSE_MODULE_LLM
+                    if (s_turn.reconnect_since_us && s_turn.phase == P_WAIT_REPLY) {
+                        s_turn.reconnect_since_us = 0;
+                        s_turn.history_next_us = now_us();
+                        s_chat_wait = MUSE_CHAT_WAIT_CHECKING;
+                    }
+#endif
                     s_auto_next_us = INT64_MAX;   /* until it drops */
                     s_auto_backoff_us = AUTO_RETRY_MIN_US;
                 } else {
@@ -2614,6 +2889,9 @@ static void hatch_task(void *arg)
             continue;
         }
         if (s_turn.phase == P_WAIT_REPLY) {
+#if CONFIG_MUSE_MODULE_LLM
+            check_saved_reply(now_us());
+#endif
             start_tts();
             decode();
         }
@@ -2639,6 +2917,13 @@ static void hatch_task(void *arg)
 }
 
 /* ---- Public API ---- */
+
+#if CONFIG_MUSE_MODULE_LLM
+extern "C" muse_chat_wait_t muse_chat_wait_state(void)
+{
+    return s_chat_wait.load();
+}
+#endif
 
 static void post(cmd_type_t type, uint32_t gen)
 {
@@ -2773,7 +3058,7 @@ extern "C" void muse_hatch_text_cancel(void)
 extern "C" bool muse_chat_recognized_turn(const char *text)
 {
 #if CONFIG_MUSE_MODULE_LLM
-    if (!s_cmds || !text || !*text || (!muse_hatch_ready() && muse_device_parse(text).kind==MUSE_DEVICE_NONE) || strnlen(text, MUSE_LLM_TEXT_MAX + 1) > MUSE_LLM_TEXT_MAX) {
+    if (!s_cmds || !text || !*text || strnlen(text, MUSE_LLM_TEXT_MAX + 1) > MUSE_LLM_TEXT_MAX) {
         return false;
     }
     char *owned = strdup(text);
