@@ -133,6 +133,17 @@ A device screenshot captured the bold speaker label and active word highlight.
 Voice and volume settings passed the before-and-after check. The tablet route
 remained healthy during the update.
 
+## Edition 0.7.4 late Module startup
+
+The Core2 waited while the Module's voice service was unavailable for about 75 seconds.
+The reply progress bar stayed hidden. The Core2 reached Ready about 30 seconds after
+the service was started, without restarting the Core2. The local playback test
+started on the Module speaker and finished normally. The application flash passed
+readback verification and retained the saved voice selection and volume.
+
+The UART host tests exercise recovery across five missed intervals, the cooldown,
+and protection for recording and active narration.
+
 ## Edition 0.7.3 Muse connection recovery
 
 The native lifecycle harness checks an accepted turn still waiting at 67 seconds,

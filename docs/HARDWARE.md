@@ -15,6 +15,10 @@ Supply the Module with stable external power through the supported hardware arra
 Two powered devices do not imply two PC data connections: a suitable external power supply
 can power Module LLM when it is away from the maintenance PC.
 
+If the Core2 starts first, it shows **Waiting for voice module** while it checks the
+connection. Turn on the Module and wait for **Hold to talk**. The Core2 keeps checking
+after a long delay and recovers the idle serial link when needed.
+
 LLM Mate is optional hardware and is not used by this integration. The tested models,
 transcripts and archives fit on the Module’s onboard eMMC; no microSD is required.
 This does not provide unlimited recording storage. Recorder imposes storage budgets and
