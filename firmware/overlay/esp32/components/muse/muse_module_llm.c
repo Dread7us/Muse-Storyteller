@@ -24,6 +24,9 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "muse_local_speech";
+#define HELLO_RETRY_US (2 * 1000000LL)
+#define FRAMING_RECOVERY_INTERVAL_US (30 * 1000000LL)
+#define MODULE_WAIT_NOTICE_US (30 * 1000000LL)
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_started, s_ready, s_recovering;
 static bool s_monitor, s_monitor_changed;
@@ -169,10 +172,9 @@ typedef struct {
     uint32_t nonce, serial, generation, generation_counter, chat_generation, record_epoch;
     char request_id[48], session[9];
     int64_t deadline, retry_at, next_status_at, waiting_since, pause_since, control_at;
-    int64_t next_framing_recovery, stable_ready_since, buffering_since;
+    int64_t next_framing_recovery, buffering_since;
     int64_t control_pending_since,control_recover_at;
     unsigned control_recoveries;
-    unsigned framing_recoveries;
     unsigned speech_speed;
     char external_key[25];
     bool accepted, speaking, end_requested, cancel_failed, stop_unconfirmed, no_speech;
@@ -180,8 +182,8 @@ typedef struct {
 
 static const char *waiting_detail(runtime_t *r, int64_t now)
 {
-    return r->waiting_since && now - r->waiting_since >= 30000000LL ?
-        "WAITING FOR VOICE MODULE..." : "LOADING VOICE...";
+    return r->waiting_since && now - r->waiting_since >= MODULE_WAIT_NOTICE_US ?
+        "WAITING FOR VOICE MODULE" : "STARTING VOICE MODULE...";
 }
 
 static void set_status(muse_module_llm_state_t state, const char *detail)
@@ -382,7 +384,7 @@ static void on_frame(const char *frame, size_t length, void *context)
                 r->nonce = esp_random();
                 snprintf(r->session, sizeof(r->session), "%08lx", (unsigned long)r->nonce);
             }
-            r->retry_at = esp_timer_get_time() + 2000000LL;
+            r->retry_at = esp_timer_get_time() + HELLO_RETRY_US;
         } else {
             r->no_speech = (r->operation == OP_LISTEN || r->operation == OP_LISTEN_END) && reply.error == -12;
             set_playback(MUSE_MODULE_LLM_PLAYBACK_FAILED);
@@ -400,12 +402,14 @@ static void on_frame(const char *frame, size_t length, void *context)
             r->operation = OP_NONE;
             r->stop_unconfirmed = false;
             r->waiting_since = 0;
+            r->next_framing_recovery = 0;
             portENTER_CRITICAL(&s_lock); bool monitoring = s_monitor; portEXIT_CRITICAL(&s_lock);
             r->next_status_at = esp_timer_get_time() + (monitoring ? 200000LL : 3000000LL);
             r->deadline = 0;
             set_status(MUSE_MODULE_LLM_READY, "HOLD TO TALK");
             ESP_LOGI(TAG, "bridge ready: protocol=1");
         } else {
+            portENTER_CRITICAL(&s_lock); s_ready = false; portEXIT_CRITICAL(&s_lock);
             fail(r, "LOCAL SPEECH SETUP DOES NOT MATCH");
             r->retry_at = esp_timer_get_time() + 5000000LL;
         }
@@ -599,6 +603,26 @@ static bool transfer_recovery_allowed(unsigned op,bool commands_pending,bool nat
         (op==OP_NONE||op==OP_HELLO||op==OP_STATUS||(op==OP_SPEAK&&native_playback));
 }
 
+static void recover_discovery_framing(runtime_t *r, int64_t now)
+{
+    if (now < r->next_framing_recovery ||
+        !transfer_recovery_allowed(OP_HELLO, uxQueueMessagesWaiting(s_commands) != 0, false)) {
+        return;
+    }
+    muse_native_voice_status_t native;
+    muse_native_voice_status(&native);
+    if (native.active) {
+        return;
+    }
+    // Boot chatter or an interrupted reply can leave a partial inbound line.
+    uart_flush_input(CONFIG_MUSE_MODULE_LLM_UART_NUM);
+    muse_llm_framer_init(&r->framer, r->framer.data, r->framer.cap);
+    recover_uart_framing();
+    // The Module may finish booting after any number of missed probes.
+    r->next_framing_recovery = now + FRAMING_RECOVERY_INTERVAL_US;
+    ESP_LOGW(TAG, "resynchronized idle voice link");
+}
+
 static void check_deadline(runtime_t *r, int64_t now)
 {
     if(r->operation==OP_SPEAK && (r->pause_since||r->buffering_since))return;
@@ -609,16 +633,10 @@ static void check_deadline(runtime_t *r, int64_t now)
         portENTER_CRITICAL(&s_lock); s_ready = false; portEXIT_CRITICAL(&s_lock);
         fail(r, "LOADING VOICE...");
         set_status(MUSE_MODULE_LLM_DISCOVERING, waiting_detail(r, now));
-        r->stable_ready_since=0;
-        if(hello_timeout && r->framing_recoveries<2 && now>=r->next_framing_recovery && !muse_memory_recorder_active()){
-            // No listening/playback operation is active here. The TX mutex
-            // prevents interleaving with an audio block; incomplete blocks still
-            // require their original checksum before they can enter the cache.
-            recover_uart_framing();r->framing_recoveries++;
-            r->next_framing_recovery=now+30000000LL;
-            ESP_LOGW(TAG,"idle UART framing recovery %u",r->framing_recoveries);
+        if (hello_timeout) {
+            recover_discovery_framing(r, now);
         }
-        r->retry_at = now + 2000000LL;
+        r->retry_at = now + HELLO_RETRY_US;
     } else if (r->operation == OP_CANCEL) {
         r->stop_unconfirmed = true;
         portENTER_CRITICAL(&s_lock); s_ready = false; portEXIT_CRITICAL(&s_lock);
@@ -642,15 +660,10 @@ static void runtime_task(void *unused)
         return;
     }
     muse_llm_framer_init(&r.framer, frame, MUSE_LLM_FRAME_MAX + 1);
-    recover_uart_framing();
     for (;;) {
         int64_t now = esp_timer_get_time();
         portENTER_CRITICAL(&s_lock);s_diag_op=r.operation;s_diag_at=now;portEXIT_CRITICAL(&s_lock);
         portENTER_CRITICAL(&s_lock); bool ready = s_ready; portEXIT_CRITICAL(&s_lock);
-        if(ready){
-            if(!r.stable_ready_since)r.stable_ready_since=now;
-            if(now-r.stable_ready_since>=60000000LL)r.framing_recoveries=0;
-        }else r.stable_ready_since=0;
         portENTER_CRITICAL(&s_lock);unsigned recovery=s_recovery_request;s_recovery_request=0;
         bool stopping=s_cancel_requested;portEXIT_CRITICAL(&s_lock);
         if(recovery){
@@ -673,8 +686,11 @@ static void runtime_task(void *unused)
             r.generation = 0;
             r.deadline = now + 10000000LL;
             set_status(MUSE_MODULE_LLM_DISCOVERING, waiting_detail(&r, now));
-            if (!send_command(&r, "hello", NULL, 0)) fail(&r, "WAITING FOR VOICE MODULE...");
-            r.retry_at = now + 15000000LL;
+            if (!send_command(&r, "hello", NULL, 0)) {
+                fail(&r, waiting_detail(&r, now));
+                set_status(MUSE_MODULE_LLM_DISCOVERING, waiting_detail(&r, now));
+                r.retry_at = now + HELLO_RETRY_US;
+            }
         }
         muse_native_voice_status_t native;muse_native_voice_status(&native);
         if (ready && !native.active && r.operation == OP_NONE && now >= r.next_status_at &&

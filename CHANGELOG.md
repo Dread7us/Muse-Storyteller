@@ -1,5 +1,10 @@
 # Release history
 
+## 0.7.4
+
+- Keep checking for the Module LLM if it powers on after the Core2. Recover an idle serial link on a cooldown, even after multiple missed checks.
+- Show when the Core2 is waiting for the Module and reserve the reply progress bar for actual Muse replies.
+
 ## 0.7.3
 
 - Wait for Wi-Fi to rejoin after a battery wake, and keep it available while a Muse request is pending.

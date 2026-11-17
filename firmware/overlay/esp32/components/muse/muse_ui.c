@@ -2649,7 +2649,8 @@ static void loading_tick(muse_mode_t mode,float now)
     muse_module_llm_status_t st;muse_module_llm_status(&st);
     muse_native_voice_status_t p;muse_native_voice_status(&p);
     bool speaking=st.state==MUSE_MODULE_LLM_SPEAKING;
-    bool waiting=(mode==MUSE_MODE_THINKING||st.state==MUSE_MODULE_LLM_PREPARING)&&!muse_memory_recorder_active();
+    bool waiting=st.state!=MUSE_MODULE_LLM_DISCOVERING&&
+        (mode==MUSE_MODE_THINKING||st.state==MUSE_MODULE_LLM_PREPARING)&&!muse_memory_recorder_active();
     if(waiting&&!tracking){tracking=true;learned=false;rebuffering=p.opening_ready_ms&&st.state==MUSE_MODULE_LLM_PREPARING;started=now;paused_at=paused_seconds=ready_until=local_at=0;key[0]=0;countdown=(muse_wait_countdown_t){0};}
     if(tracking&&p.active&&strcmp(key,p.job)){if(key[0])countdown=(muse_wait_countdown_t){0};strlcpy(key,p.job,sizeof(key));if(!rebuffering)started=now-p.elapsed_ms/1000.f;}
     bool cloud=key[0]&&!strcmp(key,p.job)&&muse_settings_voice_source()==1;
@@ -2734,7 +2735,10 @@ static void update_status(muse_mode_t mode, float now)
     }else preparing_since=0;
     /* Wi-Fi connectivity alone must never advertise a usable microphone. */
     if(mode==MUSE_MODE_IDLE || mode==MUSE_MODE_BOOT || voice_state.state==MUSE_MODULE_LLM_DISCOVERING){
-        if(voice_state.state==MUSE_MODULE_LLM_DISCOVERING)name="LOADING VOICE";
+        if(voice_state.state==MUSE_MODULE_LLM_DISCOVERING){
+            strlcpy(preparing_label,voice_state.detail,sizeof(preparing_label));
+            name=preparing_label;
+        }
         else if(voice_state.state==MUSE_MODULE_LLM_CANCELLING)name="STARTING MIC";
         else if(voice_state.state!=MUSE_MODULE_LLM_READY)name="VOICE NOT READY";
         else if(mode==MUSE_MODE_IDLE && !strcmp(name,"READY")){
