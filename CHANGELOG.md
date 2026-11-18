@@ -1,5 +1,11 @@
 # Release history
 
+## 0.7.5
+
+- Keep the current unsent question through transient Muse connection failures. Retry with exponential backoff and equal jitter, capped at 60 seconds between attempts.
+- Show the connection attempt, actual retry countdown and HTTP status, with balanced Retry now and Cancel controls. Cancel and a new recording prevent the queued question from being submitted.
+- Recover an accepted request by reconnecting and reading its correlated reply, within the existing 15-minute turn limit. Never automatically repost a task with uncertain delivery. Access refusals pause automatic retries for manual attention.
+
 ## 0.7.4
 
 - Keep checking for the Module LLM if it powers on after the Core2. Recover an idle serial link on a cooldown, even after multiple missed checks.

@@ -1257,13 +1257,14 @@ static void library_test_tick(void)
 #include "muse_status_model.h"
 static lv_obj_t *s_status_header,*s_status_battery,*s_status_fill,*s_status_text,*s_status_fill_text,*s_status_charge,*s_status_bars[4],*s_status_quota,*s_status_quota_text,*s_status_dialog,*s_status_wifi_percent,*s_status_volume_icon,*s_status_volume_text;
 static lv_obj_t *s_pause_button,*s_pause_label,*s_settings_shortcut,*s_stop_button,*s_restart_button;
+static lv_obj_t *s_retry_button,*s_retry_label,*s_cancel_wait_button;
 static int s_preview_volume=-1;
 static uint32_t s_touch_presses;
 void muse_ui_preview_volume(int pct){s_preview_volume=pct>=0 && pct<=100?pct:-1;}
 #if LV_USE_SNAPSHOT
 static volatile int s_playback_test_action=-1;
 static int s_playback_test_volume=-1;
-void muse_ui_bench_playback(int action){if(action>=0 && action<=33)s_playback_test_action=action;}
+void muse_ui_bench_playback(int action){if(action>=0 && action<=35)s_playback_test_action=action;}
 #endif
 static void playback_pause_clicked(lv_event_t *e){
     (void)e;muse_state_poke();muse_module_llm_status_t st;muse_module_llm_status(&st);
@@ -1272,6 +1273,8 @@ static void playback_pause_clicked(lv_event_t *e){
 }
 static void playback_stop_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(false);}
 static void playback_restart_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_playback_control(true);}
+static void connection_retry_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_retry_now();}
+static void connection_cancel_clicked(lv_event_t *e){(void)e;muse_state_poke();muse_chat_cancel_wait();}
 static lv_obj_t *transport_button(int x,int width,const char *text,lv_event_cb_t callback,bool primary){
     lv_obj_t *b=lv_button_create(lv_screen_active());lv_obj_remove_style_all(b);
     lv_obj_set_pos(b,x,s_h-31);lv_obj_set_size(b,width,29);lv_obj_set_style_radius(b,7,0);
@@ -1310,6 +1313,10 @@ static void playback_button_build(void)
     s_stop_button=transport_button(x,width,LV_SYMBOL_STOP " Stop",playback_stop_clicked,false);
     s_pause_button=transport_button(x+width+gap,width,LV_SYMBOL_PAUSE " Pause",playback_pause_clicked,true);s_pause_label=lv_obj_get_child(s_pause_button,0);
     s_restart_button=transport_button(x+2*(width+gap),width,LV_SYMBOL_REFRESH " Restart",playback_restart_clicked,false);
+    const int retry_width=(s_w-28)/2;
+    s_cancel_wait_button=transport_button(8,retry_width,LV_SYMBOL_CLOSE " Cancel",connection_cancel_clicked,false);
+    s_retry_button=transport_button(20+retry_width,retry_width,LV_SYMBOL_REFRESH " Retry now",connection_retry_clicked,true);
+    s_retry_label=lv_obj_get_child(s_retry_button,0);
     s_settings_shortcut=lv_button_create(lv_screen_active());lv_obj_set_pos(s_settings_shortcut,s_w-30,1);lv_obj_set_size(s_settings_shortcut,28,20);
     lv_obj_set_style_radius(s_settings_shortcut,5,0);lv_obj_set_style_pad_all(s_settings_shortcut,0,0);lv_obj_set_style_bg_color(s_settings_shortcut,lv_color_hex(0x221532),0);lv_obj_set_style_border_color(s_settings_shortcut,lv_color_hex(0x69488f),0);lv_obj_set_style_border_width(s_settings_shortcut,1,0);
     lv_obj_t *gear=make_label(s_settings_shortcut,&lv_font_montserrat_14,0xd4bdff);lv_label_set_text(gear,LV_SYMBOL_SETTINGS);lv_obj_center(gear);
@@ -1321,11 +1328,21 @@ static void playback_button_tick(void)
     if(!s_pause_button)return;
     muse_module_llm_status_t st;muse_module_llm_status(&st);
     bool active=muse_chat_playback_active() || st.state==MUSE_MODULE_LLM_PREPARING || st.state==MUSE_MODULE_LLM_SPEAKING || st.state==MUSE_MODULE_LLM_CANCELLING;
-    bool visible=!muse_state_asleep() && !muse_memory_recorder_active() && (active || (muse_chat_playback_can_restart()&&st.state==MUSE_MODULE_LLM_READY));
+    muse_chat_retry_status_t retry;muse_chat_retry_status(&retry);
+    bool retry_controls=retry.active && !active;
+    bool visible=!muse_state_asleep() && !muse_memory_recorder_active() && !retry_controls && (active || (muse_chat_playback_can_restart()&&st.state==MUSE_MODULE_LLM_READY));
+    bool retry_visible=retry_controls && !muse_state_asleep() && !muse_memory_recorder_active();
+    lv_obj_set_flag(s_retry_button,LV_OBJ_FLAG_HIDDEN,!retry_visible);
+    lv_obj_set_flag(s_cancel_wait_button,LV_OBJ_FLAG_HIDDEN,!retry_visible);
+    lv_obj_set_state(s_retry_button,LV_STATE_DISABLED,retry.connecting||retry.cancelling);
+    lv_obj_set_state(s_cancel_wait_button,LV_STATE_DISABLED,retry.cancelling);
+    const char *retry_label=retry.cancelling?"Cancelling...":retry.connecting?"Connecting...":LV_SYMBOL_REFRESH " Retry now";
+    if(strcmp(retry_label,lv_label_get_text(s_retry_label)))lv_label_set_text(s_retry_label,retry_label);
     lv_obj_set_flag(s_pause_button,LV_OBJ_FLAG_HIDDEN,!visible);lv_obj_set_flag(s_stop_button,LV_OBJ_FLAG_HIDDEN,!visible);lv_obj_set_flag(s_restart_button,LV_OBJ_FLAG_HIDDEN,!visible);
     bool in_settings=s_tv && lv_tileview_get_tile_active(s_tv)==s_settings;
-    if(visible!=s_transport_visible){s_transport_visible=visible;if(s_conversation)conversation_size();}
-    muse_settings_ui_transport_visible(visible&&in_settings);
+    bool any_transport=visible||retry_visible;
+    if(any_transport!=s_transport_visible){s_transport_visible=any_transport;if(s_conversation)conversation_size();}
+    muse_settings_ui_transport_visible(any_transport&&in_settings);
     lv_obj_set_flag(s_settings_shortcut,LV_OBJ_FLAG_HIDDEN,in_settings || muse_state_asleep());
     bool pending=st.pause_requested!=st.paused;
     bool enabled=visible && (st.state==MUSE_MODULE_LLM_SPEAKING||st.state==MUSE_MODULE_LLM_PREPARING) && !pending && !muse_chat_playback_busy();
@@ -1368,6 +1385,10 @@ static void playback_button_tick(void)
         if(action==6 && (st.state==MUSE_MODULE_LLM_SPEAKING || st.state==MUSE_MODULE_LLM_PREPARING)){if(s_playback_test_volume<0)s_playback_test_volume=muse_settings_volume();muse_settings_ui_bench_volume(s_playback_test_volume/2,false);}
         if(action==7 && s_playback_test_volume>=0){muse_settings_ui_bench_volume(s_playback_test_volume,true);s_playback_test_volume=-1;}
         muse_module_llm_status(&st);
+        if(action==34)connection_retry_clicked(NULL);
+        if(action==35)connection_cancel_clicked(NULL);
+        muse_chat_retry_status(&retry);
+        printf("@connection_retry {\"active\":%s,\"connecting\":%s,\"sent\":%s,\"blocked\":%s,\"cancelling\":%s,\"attempts\":%u,\"seconds\":%u,\"http\":%u,\"visible\":%s}\n",retry.active?"true":"false",retry.connecting?"true":"false",retry.sent?"true":"false",retry.blocked?"true":"false",retry.cancelling?"true":"false",retry.attempts,retry.seconds,retry.http_status,retry_visible?"true":"false");
         printf("@startup {\"enabled\":%s,\"visible\":%s,\"version\":\"%s\"}\n",muse_settings_startup_splash()?"true":"false",muse_startup_visible()?"true":"false",MUSE_STORYTELLER_VERSION);
         printf("@loading_ui {\"visible\":%s,\"progress_percent\":%d,\"remaining_percent\":%u,\"seconds\":%u,\"late\":%s}\n",s_loading_visible?"true":"false",s_loading_bar?(int)lv_bar_get_value(s_loading_bar):0,100u-s_loading_view.progress_percent,s_loading_view.seconds,s_loading_view.late?"true":"false");
         printf("@playback_ui {\"speaker\":%s,\"restart_available\":%s,\"transport_busy\":%s,\"brightness\":%d,\"speed\":%d,\"paused\":%s,\"requested\":%s,\"visible\":%s,\"reader_size\":%d,\"settings\":%s,\"subpage\":%s,\"volume\":%d,\"preview_volume\":%d,\"touch_presses\":%lu}\n",muse_settings_speaker_on()?"true":"false",muse_chat_playback_can_restart()?"true":"false",muse_chat_playback_busy()?"true":"false",muse_settings_brightness(),muse_settings_speech_speed(),st.paused?"true":"false",st.pause_requested?"true":"false",visible?"true":"false",s_conversation_size_mode,s_tv && lv_tileview_get_tile_active(s_tv)==s_settings?"true":"false",muse_settings_ui_in_subpage()?"true":"false",muse_settings_volume(),s_preview_volume,(unsigned long)s_touch_presses);fflush(stdout);
@@ -2693,7 +2714,17 @@ static void loading_tick(muse_mode_t mode,float now)
     if(cloud&&p.source_ready_ms&&!rebuffering)step=p.detail==2?"Downloading audio":p.detail==3?"Checking audio":"Creating and timing voice";
     if(cloud&&p.phase==7)step="Reconnecting audio";
     char text[96],note[96];
-    if(sectional){
+    muse_chat_retry_status_t retry;muse_chat_retry_status(&retry);
+    if(retry.active){
+        s_loading_view.progress_percent=0;s_loading_view.seconds=retry.seconds;s_loading_view.late=false;
+        if(retry.cancelling)strlcpy(text,"Cancelling request...",sizeof(text));
+        else if(retry.connecting)snprintf(text,sizeof(text),"Connecting to Muse | try %u",retry.attempts);
+        else if(retry.blocked)strlcpy(text,"Check Muse access in Settings",sizeof(text));
+        else snprintf(text,sizeof(text),"Next connection try in %us",retry.seconds);
+        if(retry.http_status)snprintf(note,sizeof(note),"HTTP %u | %s",retry.http_status,retry.sent?"Checking accepted request":"Question kept; not sent yet");
+        else strlcpy(note,retry.sent?"Recovering reply; task will not repeat":"Question kept until connected or cancelled",sizeof(note));
+    }
+    else if(sectional){
         const char *voice=muse_settings_muse_voice()==1?"Aria":"Helio";
         unsigned part=p.sections_ready+1;
         if(speaking)strlcpy(text,"Playing verified audio",sizeof(text));
@@ -2959,10 +2990,15 @@ static void recorder_tick(void){
 
 static void frame_tick(lv_timer_t *timer)
 {
+#if CONFIG_MUSE_MODULE_LLM
+    s_reader_phase=40;
+#endif
     recorder_tick();
     navigation_tick();
 #if CONFIG_MUSE_MODULE_LLM
+    s_reader_phase=42;
     playback_button_tick();
+    s_reader_phase=43;
     usage_popup_tick();
     bool touching=s_indev && lv_indev_get_state(s_indev)==LV_INDEV_STATE_PRESSED;
     s_reader_phase=1;s_reader_frames++;
@@ -3021,6 +3057,9 @@ static void frame_tick(lv_timer_t *timer)
     }
 #endif
     update_chrome(now);
+#if CONFIG_MUSE_MODULE_LLM
+    s_reader_phase=44;
+#endif
     if (muse_menu_tick(now)) {
         image_hide_locked();
         return;   /* the menu covers the face */
