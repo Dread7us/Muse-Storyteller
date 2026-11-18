@@ -80,6 +80,7 @@ extern "C" {
 #include "muse_conversation.h"
 #include "muse_native_voice.h"
 #include "muse_memory.h"
+#include "muse_connection_retry.h"
 #endif
 #if CONFIG_MUSE_MODULE_LLM
 #include "muse_module_llm.h"
@@ -138,7 +139,6 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 #define CHAT_ACK_TIMEOUT_US (25 * 1000000LL)
 #define CHAT_WIFI_WAKE_US (10 * 1000000LL)
 #define CHAT_REPLY_IDLE_US (150 * 1000000LL)
-#define CHAT_RECONNECT_US (45 * 1000000LL)
 #define CHAT_HISTORY_INTERVAL_US (15 * 1000000LL)
 #define CHAT_HISTORY_TIMEOUT_US (6 * 1000000LL)
 #endif
@@ -160,12 +160,14 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE, CMD_NATIVE_MESSAGE_FIXTURE, CMD_NATIVE_RANGE };
+                          CMD_LOCAL_TEXT, CMD_PLAYBACK_STOP, CMD_PLAYBACK_RESTART, CMD_BENCH_PLAYBACK, CMD_DEVICE_TEST, CMD_BENCH_CLEAR, CMD_NATIVE_PROBE, CMD_NATIVE_FILE, CMD_NATIVE_FIXTURE, CMD_NATIVE_MESSAGE_FIXTURE, CMD_NATIVE_RANGE,
+                          CMD_RETRY_CONNECTION, CMD_CANCEL_WAIT, CMD_CONNECTION_TEST };
 
 struct cmd_t {
     cmd_type_t type;
     uint32_t gen;
     char *text;              /* CMD_TEXT: malloc'd, freed by the session task */
+    unsigned arg = 0;
 };
 
 struct ev_t {
@@ -183,6 +185,25 @@ static std::atomic<bool> s_resting{false};
 #if CONFIG_MUSE_MODULE_LLM
 static std::atomic<muse_chat_wait_t> s_chat_wait{MUSE_CHAT_WAIT_NONE};
 static bool s_chat_wifi_held;
+/* The task owns the text; the UI reads only this small synchronized snapshot. */
+static char *s_unsent_request;
+static portMUX_TYPE s_retry_lock = portMUX_INITIALIZER_UNLOCKED;
+static muse_chat_retry_status_t s_retry;
+static int64_t s_retry_at_us;
+static int s_connect_http_status;
+static std::atomic<uint32_t> s_cancel_wait_generation{0};
+static unsigned s_bench_connection_failures;
+
+static void connection_retry_clear(void)
+{
+    free(s_unsent_request);
+    s_unsent_request = nullptr;
+    s_bench_connection_failures = 0;
+    portENTER_CRITICAL(&s_retry_lock);
+    s_retry = muse_chat_retry_status_t{};
+    s_retry_at_us = 0;
+    portEXIT_CRITICAL(&s_retry_lock);
+}
 #endif
 
 /* ---- Connection ---- */
@@ -235,7 +256,7 @@ static stream_t s_streams[MAX_STREAMS];
 
 /* ---- The current turn ---- */
 
-enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY };
+enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY, P_CONNECTING };
 
 enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
@@ -962,6 +983,9 @@ static bool connect_once(char *err, size_t err_cap, int *http_status)
 
 static bool ensure_connected(void)
 {
+#if CONFIG_MUSE_MODULE_LLM
+    s_connect_http_status = 0;
+#endif
     if (s_connected) {
         return true;
     }
@@ -991,6 +1015,9 @@ static bool ensure_connected(void)
             muse_hatch_report(MUSE_HATCH_REACHABLE, "");
             return true;
         }
+#if CONFIG_MUSE_MODULE_LLM
+        s_connect_http_status = status == 101 ? 0 : status;
+#endif
         disconnect(err);
         /* A refused VM token may just be stale: fetch a fresh one once. */
         if ((status == 401 || status == 403) && !s_vm_direct) {
@@ -1059,6 +1086,7 @@ static void turn_finish(void)
     s_pending_reply_msg=-1;s_pending_reply[0]=0;
     s_playback_active=false;
 #if CONFIG_MUSE_MODULE_LLM
+    connection_retry_clear();
     s_chat_wait = MUSE_CHAT_WAIT_NONE;
     if (s_chat_wifi_held) {
         s_chat_wifi_held = false;
@@ -1407,6 +1435,106 @@ static void post_chat(const char *text)
     emit(MUSE_HATCH_EV_HEARD, text);
     send_chat(text, "text");
 }
+
+#if CONFIG_MUSE_MODULE_LLM
+/* Begin queued connection recovery. No chat bytes have been submitted here. */
+static void queue_connection_request(char *text)
+{
+    s_unsent_request = text;
+    s_turn.phase = P_CONNECTING;
+    s_chat_wait = MUSE_CHAT_WAIT_CONNECTING;
+    s_chat_wifi_held = true;
+    muse_wifi_keep_awake(true);
+    portENTER_CRITICAL(&s_retry_lock);
+    s_retry.active = true;
+    s_retry_at_us = 0;
+    portEXIT_CRITICAL(&s_retry_lock);
+    emit(MUSE_HATCH_EV_HEARD, text);
+}
+
+/* The only delays are deadlines in the session loop: the UI remains runnable. */
+static void connection_retry_begin(bool sent)
+{
+    portENTER_CRITICAL(&s_retry_lock);
+    s_retry.active = s_retry.connecting = true;
+    s_retry.sent = sent;
+    s_retry.blocked = false;
+    if (s_retry.attempts < 1000000) ++s_retry.attempts;
+    portEXIT_CRITICAL(&s_retry_lock);
+}
+
+static void connection_retry_failed(void)
+{
+    unsigned delay = muse_connection_retry_delay_ms(s_retry.attempts, esp_random());
+    bool blocked = !muse_hatch_configured() || !muse_connection_retry_automatic(s_connect_http_status);
+    int64_t at = now_us() + (int64_t)delay * 1000;
+    portENTER_CRITICAL(&s_retry_lock);
+    s_retry.connecting = false;
+    s_retry.http_status = s_connect_http_status > 0 ? (unsigned)s_connect_http_status : 0;
+    s_retry.blocked = blocked;
+    s_retry_at_us = at;
+    portEXIT_CRITICAL(&s_retry_lock);
+}
+
+static void connection_retry_now(void)
+{
+    portENTER_CRITICAL(&s_retry_lock);
+    if (s_retry.active && !s_retry.connecting && !s_retry.cancelling) {
+        s_retry.blocked = false;
+        s_retry_at_us = 0;
+        s_auto_next_us = 0;
+        s_turn.history_next_us = 0;
+    }
+    portEXIT_CRITICAL(&s_retry_lock);
+}
+
+static void pending_connection_tick(void)
+{
+    if (s_turn.gen != s_gen.load()) {
+        turn_finish();
+        return;
+    }
+    if (s_retry.blocked || now_us() < s_retry_at_us) return;
+    connection_retry_begin(false);
+    // A moved VM can leave the cached route unusable even without a 401.
+    // Refresh occasionally, rather than refetching on every backoff interval.
+    if (!s_vm_direct && s_retry.attempts >= 3 && s_retry.attempts % 8 == 3) forget_vm();
+    bool connected = false;
+    if (s_bench_connection_failures) {
+        --s_bench_connection_failures;
+        s_connect_http_status = 502;
+    }
+    else if (muse_wifi_connected()) connected = ensure_connected();
+    else {
+        s_connect_http_status = 0;
+        muse_wifi_apply();
+    }
+    // A finger tap or a new recording can invalidate this attempt while TLS waits.
+    if (s_turn.gen != s_gen.load()) {
+        turn_finish();
+        return;
+    }
+    if (!connected) {
+        connection_retry_failed();
+        return;
+    }
+    // Commit the unsent request against the same lock used by Cancel.
+    char *text = nullptr;
+    portENTER_CRITICAL(&s_retry_lock);
+    if (s_turn.gen == s_gen.load() && !s_retry.cancelling) {
+        text = s_unsent_request;
+        s_unsent_request = nullptr;
+        s_retry = muse_chat_retry_status_t{};
+        s_retry_at_us = 0;
+    }
+    portEXIT_CRITICAL(&s_retry_lock);
+    if (!text) { turn_finish(); return; }
+    s_turn.start_us = now_us();
+    post_chat(text);
+    free(text);
+}
+/* End queued connection recovery. */
+#endif
 
 /* A typed turn: the text goes straight to the chat. */
 static void text_begin(const char *text)
@@ -2719,7 +2847,7 @@ static void restart_reply(void)
     if(s_turn.native_direct && s_turn.native_started && !muse_native_voice_rebind(previous,s_turn.gen))s_turn.native_started=false;
     s_restart_wait=true;emit(MUSE_HATCH_EV_HEARD,"Restarting reply...");
 }
-static void handle(const cmd_t &cmd)
+static void handle(cmd_t cmd)
 {
     switch (cmd.type) {
     case CMD_NATIVE_MESSAGE_FIXTURE:
@@ -2749,6 +2877,22 @@ static void handle(const cmd_t &cmd)
             disconnect("reconnect requested");
             ensure_connected();
         }
+        break;
+    case CMD_RETRY_CONNECTION:
+#if CONFIG_MUSE_MODULE_LLM
+        if (cmd.gen == s_turn.gen && cmd.gen == s_gen.load()) connection_retry_now();
+#endif
+        break;
+    case CMD_CANCEL_WAIT:
+#if CONFIG_MUSE_MODULE_LLM
+        if (cmd.gen == s_gen.load()) {
+            turn_finish();
+            s_turn.gen = cmd.gen;
+            s_can_restart = false;
+            emit(MUSE_HATCH_EV_DONE, nullptr);
+            muse_state_set_caption("Request cancelled");
+        }
+#endif
         break;
     case CMD_FORGET:
         if (s_turn.phase != P_IDLE) {
@@ -2803,13 +2947,16 @@ static void handle(const cmd_t &cmd)
     case CMD_PLAYBACK_RESTART:restart_reply();break;
     case CMD_DEVICE_TEST:
     case CMD_LOCAL_TEXT:
+    case CMD_CONNECTION_TEST:
 #if CONFIG_MUSE_MODULE_LLM
         if(cmd.gen==s_gen.load()){
             muse_device_command_t action=muse_device_parse(cmd.text);
-            if(turn_start(cmd.gen,false,action.kind==MUSE_DEVICE_NONE)){
+            if(turn_start(cmd.gen,false,false)){
                 mark(M_RELEASE);
-                if(cmd.type==CMD_DEVICE_TEST)s_bench_reply=true;
-                if(action.kind!=MUSE_DEVICE_NONE)local_device_reply(action);else post_chat(cmd.text);
+                if(cmd.type==CMD_DEVICE_TEST || cmd.type==CMD_CONNECTION_TEST)s_bench_reply=true;
+                if(cmd.type==CMD_CONNECTION_TEST)s_bench_connection_failures=cmd.arg;
+                if(action.kind!=MUSE_DEVICE_NONE)local_device_reply(action);
+                else {queue_connection_request(cmd.text);cmd.text=nullptr;}
                 if(s_turn.phase==P_WAIT_REPLY)mark(M_SENT);
             }
         }
@@ -2826,7 +2973,7 @@ static void hatch_task(void *arg)
         /* Resting, the socket's keepalive (PING_US) needs no quicker polls.
          * Resting unconnected, Wi-Fi may nap (muse_wifi_nap): wait for a
          * turn or for waking (CMD_WAKE) instead of watching it. */
-        int wait_ms = !s_connected ? (s_resting && s_turn.phase == P_IDLE ? -1 : 200) : s_turn.phase != P_IDLE ? 2 : s_resting ? 500 : 20;
+        int wait_ms = s_turn.phase == P_CONNECTING ? 100 : !s_connected ? (s_resting && s_turn.phase == P_IDLE ? -1 : 200) : s_turn.phase != P_IDLE ? 2 : s_resting ? 500 : 20;
         TickType_t wait = wait_ms < 0 ? portMAX_DELAY : pdMS_TO_TICKS(wait_ms);
         if (xQueueReceive(s_cmds, &cmd, wait) == pdTRUE) {
             handle(cmd);
@@ -2834,6 +2981,14 @@ static void hatch_task(void *arg)
                 handle(cmd);
             }
         }
+#if CONFIG_MUSE_MODULE_LLM
+        uint32_t cancelled = s_cancel_wait_generation.exchange(0);
+        if (cancelled) handle(cmd_t{CMD_CANCEL_WAIT, cancelled, nullptr});
+        if (s_turn.phase == P_CONNECTING) {
+            pending_connection_tick();
+            continue;
+        }
+#endif
         if(s_turn.phase==P_WAIT_REPLY && (s_local_only || (s_replaying&&!s_connected))){
             start_tts();decode();check_turn();vTaskDelay(pdMS_TO_TICKS(2));continue;
         }
@@ -2843,29 +2998,51 @@ static void hatch_task(void *arg)
             if (s_turn.reconnect_since_us && s_turn.phase == P_WAIT_REPLY) {
                 // Let audio already handed to the Module finish during recovery.
                 decode();
-                if (s_turn.tts_msg < 0 && now_us() - s_turn.reconnect_since_us >= CHAT_RECONNECT_US) {
+                if (s_turn.tts_msg < 0 && now_us() - s_turn.start_us >= TEXT_TURN_CAP_US) {
                     turn_fail("MUSE CONNECTION LOST - CHECK MUSE APP");
+                } else {
+                    portENTER_CRITICAL(&s_retry_lock);
+                    s_retry.active = s_retry.sent = true;
+                    if (!s_retry.connecting) s_retry_at_us = s_auto_next_us;
+                    portEXIT_CRITICAL(&s_retry_lock);
                 }
             }
+#endif
+            bool retry_allowed = true;
+#if CONFIG_MUSE_MODULE_LLM
+            retry_allowed = !s_retry.active || !s_retry.blocked;
 #endif
             if (!muse_wifi_connected()) {
                 s_auto_next_us = 0;
                 s_auto_backoff_us = AUTO_RETRY_MIN_US;
-            } else if (muse_hatch_configured() && now_us() >= s_auto_next_us) {
+            } else if (retry_allowed && muse_hatch_configured() && now_us() >= s_auto_next_us) {
+#if CONFIG_MUSE_MODULE_LLM
+                bool recovering = s_turn.reconnect_since_us && s_turn.phase == P_WAIT_REPLY;
+                if (recovering) connection_retry_begin(true);
+#endif
                 if (ensure_connected()) {
 #if CONFIG_MUSE_MODULE_LLM
                     if (s_turn.reconnect_since_us && s_turn.phase == P_WAIT_REPLY) {
                         s_turn.reconnect_since_us = 0;
                         s_turn.history_next_us = now_us();
                         s_chat_wait = MUSE_CHAT_WAIT_CHECKING;
+                        connection_retry_clear();
                     }
 #endif
                     s_auto_next_us = INT64_MAX;   /* until it drops */
                     s_auto_backoff_us = AUTO_RETRY_MIN_US;
                 } else {
+#if CONFIG_MUSE_MODULE_LLM
+                    if (recovering) {
+                        connection_retry_failed();
+                        s_auto_next_us = s_retry.blocked ? INT64_MAX : s_retry_at_us;
+                    } else
+#endif
+                    {
                     s_auto_next_us = now_us() + s_auto_backoff_us;
                     s_auto_backoff_us = s_auto_backoff_us * 2 < AUTO_RETRY_MAX_US ? s_auto_backoff_us * 2
                                                                                    : AUTO_RETRY_MAX_US;
+                    }
                 }
             }
             continue;
@@ -2922,6 +3099,59 @@ static void hatch_task(void *arg)
 extern "C" muse_chat_wait_t muse_chat_wait_state(void)
 {
     return s_chat_wait.load();
+}
+
+extern "C" void muse_chat_retry_status(muse_chat_retry_status_t *out)
+{
+    if (!out) return;
+    int64_t at;
+    portENTER_CRITICAL(&s_retry_lock);
+    *out = s_retry;
+    at = s_retry_at_us;
+    portEXIT_CRITICAL(&s_retry_lock);
+    int64_t left = at - now_us();
+    out->seconds = !out->blocked && left > 0 ? (unsigned)((left + 999999) / 1000000) : 0;
+}
+
+extern "C" bool muse_chat_retry_now(void)
+{
+    muse_chat_retry_status_t state;
+    muse_chat_retry_status(&state);
+    if (!s_cmds || !state.active || state.connecting || state.cancelling) return false;
+    cmd_t command{CMD_RETRY_CONNECTION, s_gen.load(), nullptr};
+    return xQueueSend(s_cmds, &command, 0) == pdTRUE;
+}
+
+extern "C" bool muse_chat_cancel_wait(void)
+{
+    if (!s_cmds) return false;
+    uint32_t gen = 0;
+    portENTER_CRITICAL(&s_retry_lock);
+    if (s_retry.active && !s_retry.cancelling) {
+        s_retry.cancelling = true;
+        gen = ++s_gen;
+    }
+    portEXIT_CRITICAL(&s_retry_lock);
+    if (!gen) return false;
+    s_cancel_wait_generation = gen;
+    cmd_t wake{CMD_WAKE, 0, nullptr};
+    xQueueSend(s_cmds, &wake, 0); // The atomic cancellation survives a full queue.
+    return true;
+}
+
+extern "C" bool muse_chat_bench_retry(unsigned failures)
+{
+#if CONFIG_LV_USE_SNAPSHOT
+    if (!s_cmds || failures > 12 || s_turn.phase != P_IDLE || muse_memory_recorder_active()) return false;
+    char *text = strdup("For this short device connection test, reply only with one sentence: The blue lantern is on the table.");
+    if (!text) return false;
+    cmd_t command{CMD_CONNECTION_TEST, ++s_gen, text, failures};
+    if (xQueueSend(s_cmds, &command, 0) == pdTRUE) return true;
+    free(text);
+#else
+    (void)failures;
+#endif
+    return false;
 }
 #endif
 

@@ -153,6 +153,19 @@ typedef enum {
 
 /* Current transport stage, read by the UI without waiting on the network task. */
 muse_chat_wait_t muse_chat_wait_state(void);
+
+typedef struct {
+    bool active, connecting, sent, blocked, cancelling;
+    unsigned attempts, seconds, http_status;
+} muse_chat_retry_status_t;
+
+/* Retry connections, or read an accepted request's reply; never repost a task.
+ * The unsent request is held in RAM until connected, cancelled, or replaced. */
+void muse_chat_retry_status(muse_chat_retry_status_t *out);
+bool muse_chat_retry_now(void);
+bool muse_chat_cancel_wait(void);
+/* Snapshot-enabled bench only: fail N connection attempts before one harmless test. */
+bool muse_chat_bench_retry(unsigned failures);
 #endif
 
 /*

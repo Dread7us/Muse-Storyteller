@@ -2,7 +2,7 @@
 
 # Muse Storyteller
 
-**Edition v0.7.4**
+**Edition v0.7.5**
 
 ### A small companion. A better voice. Stories worth listening to.
 
@@ -29,6 +29,8 @@ This community edition adds the speech, reader, recorder, and control experience
 </div>
 
 ---
+
+If Muse is temporarily unreachable, the Core2 keeps the current unsent question in RAM and retries the connection with increasing, randomized waits (up to 60 seconds). The screen shows the attempt and real next-try countdown, with **Retry now** and **Cancel**. A new question replaces the queued one; rebooting clears it. Once a task has been sent, recovery checks for its matching reply without automatically posting that task again. Authentication and non-transient rejections require attention before automatic retries resume.
 
 Native Muse narration is an optional online path using the existing Muse account allowance,
 with Piper kept for offline narration. See [native voice setup and limits](docs/NATIVE-VOICE-DEVELOPMENT.md).

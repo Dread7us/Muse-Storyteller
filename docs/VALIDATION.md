@@ -133,6 +133,31 @@ A device screenshot captured the bold speaker label and active word highlight.
 Voice and volume settings passed the before-and-after check. The tablet route
 remained healthy during the update.
 
+## Edition 0.7.5 connection retries
+
+The Core2 application compiled and passed app-only flash readback, startup, UI
+heartbeat and saved-setting checks. The first installation was rolled back when
+the short UI startup check did not pass; the final check waits for the splash to
+close and an advancing UI heartbeat before accepting the installation.
+
+On the reference device, simulated HTTP 502 connection failures exercised the
+actual retry state and countdown. Retry now advanced the pending attempt in about
+1.4 seconds. Cancel ended the queued question with no chat submission. A separate
+test survived three simulated connection failures, submitted one harmless prompt
+exactly once, then received and played real Aria audio through completion with
+advancing word highlighting. A framebuffer capture was inspected for the retry
+status and balanced controls. A local narration regression check passed Pause,
+Resume, Stop and Restart after recovery, with voice and volume unchanged. These
+checks do not force an outage in Muse itself.
+
+The portable suite runs 176 cases on Windows, with 19 platform-dependent skips.
+New native tests execute the production queued-request code for backoff/jitter
+bounds, transient errors, authentication refusals, Wi-Fi recovery, cancellation
+during connection, a full command queue, replacement by a new question, and the
+real retry deadline. Existing lifecycle tests cover correlated saved replies and
+protection against duplicate submission. Unsent requests live in RAM; they do not
+survive a Core2 reboot. Accepted-request recovery retains the 15-minute turn cap.
+
 ## Edition 0.7.4 late Module startup
 
 The Core2 waited while the Module's voice service was unavailable for about 75 seconds.
