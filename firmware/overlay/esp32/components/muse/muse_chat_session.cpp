@@ -1024,6 +1024,12 @@ static bool ensure_connected(void)
             forget_vm();
             continue;
         }
+        // Gateway failures may refer to a stale VM route. Re-resolve the
+        // existing paired account once before backing off; no chat was sent.
+        if (muse_connection_refresh_route(status, s_vm_direct)) {
+            forget_vm();
+            if (attempt == 0) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
+        }
         break;
     }
     ESP_LOGW(TAG, "connect failed: %s", err);
