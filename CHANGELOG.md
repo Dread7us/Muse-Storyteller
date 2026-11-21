@@ -1,5 +1,12 @@
 # Release history
 
+## 0.7.9
+
+- Run paired VM credential lookup on the existing internal-RAM heartbeat worker. Later reconnects no longer need a new contiguous 8 KiB task stack after display/audio startup.
+- Refresh a paired VM route after HTTP 502/503/504, once immediately and then through the existing retry schedule. Leave custom direct VM settings alone; never repost an accepted task.
+- Retain the queued-question countdown, Retry now, Cancel, narration and device settings. No PC helper or new credential destination is required.
+- Versions 0.7.6–0.7.8 were private diagnostic builds. The rejected wake API experiment is not included in this release; server-side wake access remains unverified.
+
 ## 0.7.5
 
 - Keep the current unsent question through transient Muse connection failures. Retry with exponential backoff and equal jitter, capped at 60 seconds between attempts.

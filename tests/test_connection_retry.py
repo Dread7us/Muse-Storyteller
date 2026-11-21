@@ -76,6 +76,8 @@ int main(int argc,char **argv){assert(argc==2);std::string test=argv[1];
   assert(muse_connection_retry_delay_ms(1000000,0)==30000);
   for(int s:{0,408,425,429,500,502,503,504,599})assert(muse_connection_retry_automatic(s));
   for(int s:{400,401,403,404,409,422,600})assert(!muse_connection_retry_automatic(s));
+  for(int s:{502,503,504}){assert(muse_connection_refresh_route(s,false));assert(!muse_connection_refresh_route(s,true));}
+  for(int s:{0,101,200,400,401,403,429,500,501,599})assert(!muse_connection_refresh_route(s,false));
  }
  else if(test=="recover"){
   start();outcomes={502,503,0,429,200};

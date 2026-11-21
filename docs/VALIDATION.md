@@ -4,6 +4,14 @@ Development reference: one physical Core2 v1.1 + Module LLM stack, tested during
 October–November 2026. These statements describe observed development checks, not
 certification of every installation or a promise about all future upstream versions.
 
+## Edition 0.7.9 reconnect repair
+
+- Windows regression run: 180 tests, 19 platform/dependency skips. The production credential dispatcher completed once, preserved a busy request, and refused invalid buffers or a not-ready startup without waiting. Retry tests include gateway-only route refresh and protection of direct/custom routes.
+- Full Core2 v1.1 build passed with ESP-IDF 6.0.1. The application-only image was digest-verified on the reference device, followed by a healthy boot, ready Module bridge and retained settings.
+- One harmless two-sentence cloud request connected after that reboot and was submitted once. Speech began after 20.6 seconds. Pause and Resume were acknowledged; the cached narration completed with advancing word positions and responsive UI. Aria and 60% volume were retained.
+- The connected test does not establish recovery from every sleeping/unavailable cloud instance. The independent battery/power-bank test is pending owner feedback. Earlier observed HTTP 502 failures and the wake probe's HTTP 401 are distinct from the corrected local task-allocation hazard.
+- The private wake experiment was removed. This release adds no wake endpoint or credential destination, and does not use a PC or browser helper for connection recovery. A server outage or access refusal remains outside what local retries can guarantee.
+
 ## What was exercised
 
 - English Whisper Base through hold-to-talk and Recorder, including final-word draining.

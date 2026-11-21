@@ -19,3 +19,10 @@ static inline bool muse_connection_retry_automatic(int status)
     return status <= 0 || status == 408 || status == 425 || status == 429 ||
            (status >= 500 && status < 600);
 }
+
+/* Refresh a paired VM route after a gateway failure. Direct/custom VM details
+ * remain under the user's control. This never repeats an accepted chat task. */
+static inline bool muse_connection_refresh_route(int status, bool direct)
+{
+    return !direct && (status == 502 || status == 503 || status == 504);
+}
