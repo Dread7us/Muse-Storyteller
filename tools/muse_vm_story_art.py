@@ -39,7 +39,8 @@ def native_image(directory, query, timeout=150, executable='/opt/hatch/bin/media
     """Use the already installed, account-native media tool. Never add a provider."""
     args=[executable,'--media-subagent-output-type','image',
           '--image-output-format','jpeg','--orientation','landscape',
-          '--output-dir',str(directory),'--timeout-secs',str(timeout),query]
+          '--output-dir',str(directory),'--timeout-secs',str(timeout),
+          '--conversation-json',json.dumps([{'text':query}],ensure_ascii=False)]
     with (directory.parent/'generation-private.log').open('wb') as log:
         os.chmod(log.name,0o600)
         process=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=log,
